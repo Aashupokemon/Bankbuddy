@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BankBuddy — Coming Soon</title>
+<meta name="description" content="BankBuddy is a shared task workspace for bank branches: capture work in a sentence, track it on one board, keep every change accountable. Pilot build in progress." />
+<meta name="theme-color" content="#070c18" />
+<meta property="og:title" content="BankBuddy — Coming Soon" />
+<meta property="og:description" content="A shared task workspace for branch banking teams. Chat capture, one board, full audit trail." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%23070c18'/%3E%3Cpath d='M26 66V40l12 14 12-14v26' stroke='%2334d399' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='70' cy='58' r='7' fill='%23fbbf24'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #070c18;
+    --bg-soft: #0c1424;
+    --panel: rgba(255, 255, 255, 0.035);
+    --line: rgba(255, 255, 255, 0.09);
+    --text: #e9eef8;
+    --muted: #93a1bd;
+    --mint: #34d399;
+    --amber: #fbbf24;
+    --blue: #60a5fa;
+    --radius: 18px;
+    --max: 1080px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(620px 420px at 12% -8%, rgba(52, 211, 153, 0.16), transparent 70%),
+      radial-gradient(700px 480px at 92% 4%, rgba(96, 165, 250, 0.14), transparent 72%),
+      radial-gradient(560px 380px at 50% 108%, rgba(251, 191, 36, 0.09), transparent 72%),
+      linear-gradient(180deg, #070c18 0%, #080e1c 55%, #070c18 100%);
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 20%, transparent 78%);
+    -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 20%, transparent 78%);
+  }
+
+  a { color: inherit; }
+
+  .wrap {
+    width: 100%;
+    max-width: var(--max);
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  .skip {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    background: var(--mint);
+    color: #04120c;
+    padding: 10px 16px;
+    border-radius: 0 0 10px 0;
+    font-weight: 600;
+    z-index: 10;
+  }
+  .skip:focus { left: 0; }
+
+  :focus-visible {
+    outline: 2px solid var(--mint);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+
+  /* ---------- header ---------- */
+  header {
+    border-bottom: 1px solid var(--line);
+    background: rgba(7, 12, 24, 0.72);
+    backdrop-filter: blur(12px);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    height: 68px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    font-size: 1.06rem;
+    text-decoration: none;
+  }
+
+  .mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(150deg, rgba(52, 211, 153, 0.22), rgba(96, 165, 250, 0.16));
+    border: 1px solid rgba(52, 211, 153, 0.4);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    flex: none;
+  }
+  .mark svg { display: block; }
+
+  nav.links {
+    display: flex;
+    gap: 26px;
+    font-size: 0.92rem;
+  }
+  nav.links a {
+    color: var(--muted);
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+  nav.links a:hover { color: var(--text); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    padding: 96px 0 72px;
+    text-align: center;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 15px 7px 11px;
+    border-radius: 999px;
+    border: 1px solid rgba(251, 191, 36, 0.32);
+    background: rgba(251, 191, 36, 0.08);
+    color: #fde68a;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.15);
+    animation: pulse 2.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.82); }
+  }
+
+  h1 {
+    font-size: clamp(2.9rem, 8.4vw, 5.1rem);
+    line-height: 0.98;
+    letter-spacing: -0.042em;
+    margin: 26px 0 0;
+    font-weight: 700;
+  }
+
+  h1 .grad {
+    background: linear-gradient(96deg, #6ee7b7 4%, #93c5fd 46%, #fcd34d 96%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .tagline {
+    margin: 22px auto 0;
+    max-width: 40ch;
+    font-size: clamp(1.05rem, 2.4vw, 1.28rem);
+    color: var(--muted);
+    text-wrap: balance;
+  }
+
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 34px;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 13px 22px;
+    border-radius: 12px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+
+  .btn.primary {
+    background: linear-gradient(180deg, #34d399, #10b981);
+    color: #03130c;
+    box-shadow: 0 10px 26px -12px rgba(52, 211, 153, 0.85);
+  }
+  .btn.primary:hover { background: linear-gradient(180deg, #4ade80, #14b8a6); }
+
+  .btn.ghost {
+    border-color: var(--line);
+    background: var(--panel);
+    color: var(--text);
+  }
+  .btn.ghost:hover { border-color: rgba(255, 255, 255, 0.22); background: rgba(255, 255, 255, 0.06); }
+
+  /* ---------- sections ---------- */
+  section { padding: 62px 0; }
+
+  .eyebrow {
+    font-size: 0.76rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--mint);
+    font-weight: 700;
+    margin: 0 0 12px;
+  }
+
+  h2 {
+    font-size: clamp(1.6rem, 4vw, 2.15rem);
+    letter-spacing: -0.028em;
+    line-height: 1.15;
+    margin: 0 0 14px;
+    font-weight: 700;
+  }
+
+  .lede { color: var(--muted); max-width: 62ch; margin: 0; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+    gap: 16px;
+    margin-top: 32px;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 24px 22px;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16), transparent);
+  }
+
+  .card h3 {
+    margin: 0 0 8px;
+    font-size: 1.03rem;
+    letter-spacing: -0.01em;
+  }
+
+  .card p { margin: 0; color: var(--muted); font-size: 0.94rem; }
+
+  .icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    margin-bottom: 16px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .icon.mint { color: var(--mint); border-color: rgba(52, 211, 153, 0.3); background: rgba(52, 211, 153, 0.1); }
+  .icon.blue { color: var(--blue); border-color: rgba(96, 165, 250, 0.3); background: rgba(96, 165, 250, 0.1); }
+  .icon.amber { color: var(--amber); border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.1); }
+
+  /* ---------- steps ---------- */
+  .steps {
+    counter-reset: step;
+    display: grid;
+    gap: 14px;
+    margin-top: 30px;
+  }
+
+  .step {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    gap: 18px;
+    align-items: start;
+    padding: 20px 22px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012));
+  }
+
+  .step::before {
+    counter-increment: step;
+    content: counter(step, decimal-leading-zero);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--mint);
+    border: 1px solid rgba(52, 211, 153, 0.32);
+    background: rgba(52, 211, 153, 0.09);
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    height: 44px;
+  }
+
+  .step h3 { margin: 2px 0 4px; font-size: 1rem; }
+  .step p { margin: 0; color: var(--muted); font-size: 0.93rem; }
+
+  /* ---------- roadmap ---------- */
+  .rail {
+    margin-top: 34px;
+    border-left: 1px solid var(--line);
+    padding-left: 26px;
+    display: grid;
+    gap: 26px;
+  }
+
+  .milestone { position: relative; }
+  .milestone::before {
+    content: "";
+    position: absolute;
+    left: -32px;
+    top: 7px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--bg-soft);
+    border: 2px solid var(--line);
+  }
+  .milestone.now::before {
+    background: var(--amber);
+    border-color: rgba(251, 191, 36, 0.35);
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.14);
+  }
+
+  .when {
+    font-size: 0.76rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .milestone.now .when { color: var(--amber); }
+  .milestone h3 { margin: 4px 0 5px; font-size: 1rem; }
+  .milestone p { margin: 0; color: var(--muted); font-size: 0.93rem; max-width: 66ch; }
+
+  /* ---------- faq ---------- */
+  details {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 0;
+    margin-top: 12px;
+    overflow: hidden;
+  }
+  details[open] { border-color: rgba(255, 255, 255, 0.16); }
+  summary {
+    cursor: pointer;
+    padding: 17px 20px;
+    font-weight: 600;
+    font-size: 0.96rem;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: center;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after {
+    content: "+";
+    color: var(--mint);
+    font-size: 1.15rem;
+    line-height: 1;
+    flex: none;
+  }
+  details[open] summary::after { content: "−"; }
+  details p {
+    margin: 0;
+    padding: 0 20px 19px;
+    color: var(--muted);
+    font-size: 0.93rem;
+  }
+
+  /* ---------- footer ---------- */
+  footer {
+    border-top: 1px solid var(--line);
+    margin-top: 40px;
+    padding: 34px 0 52px;
+    font-size: 0.87rem;
+    color: var(--muted);
+  }
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .foot a { color: var(--muted); text-decoration: none; border-bottom: 1px solid rgba(255, 255, 255, 0.16); }
+  .foot a:hover { color: var(--text); }
+
+  .note {
+    margin-top: 22px;
+    padding: 14px 16px;
+    border: 1px dashed rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    font-size: 0.83rem;
+    color: #7d8aa6;
+    max-width: 78ch;
+  }
+
+  @media (max-width: 640px) {
+    body { font-size: 16px; }
+    nav.links { display: none; }
+    .hero { padding: 64px 0 46px; }
+    section { padding: 48px 0; }
+    .step { grid-template-columns: 1fr; gap: 12px; padding: 18px; }
+    .step::before { height: 34px; width: 34px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="#top">
+      <span class="mark" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 18V6l7 7 7-7v12" />
+        </svg>
+      </span>
+      BankBuddy
+    </a>
+    <nav class="links" aria-label="Sections">
+      <a href="#what">What it is</a>
+      <a href="#how">How it works</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div id="top"></div>
+
+  <div class="wrap hero">
+    <span class="pill"><span class="dot" aria-hidden="true"></span>Coming soon · pilot build in progress</span>
+    <h1>Branch work,<br /><span class="grad">finally in one place.</span></h1>
+    <p class="tagline">
+      BankBuddy turns a sentence like “Ravi will call the Sharma account about the KYC gap by
+      Thursday” into a tracked, owned, auditable task — without leaving the branch board.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="#what">See what’s coming</a>
+      <a class="btn ghost" href="#roadmap">Read the roadmap</a>
+    </div>
+  </div>
+
+  <section id="what">
+    <div class="wrap">
+      <p class="eyebrow">What it is</p>
+      <h2>A workspace built for the branch floor, not the head office.</h2>
+      <p class="lede">
+        Branch teams carry work in chat threads, registers and memory. BankBuddy gives that work one
+        shared home: capture it in plain language, see it on a single board, and keep every change
+        accountable — who did what, when, and why.
+      </p>
+
+      <div class="grid">
+        <article class="card">
+          <div class="icon mint" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <h3>Capture in a sentence</h3>
+          <p>Type it the way you’d say it. BankBuddy extracts the task, owner, due date and priority into an editable draft — nothing is saved until a person confirms.</p>
+        </article>
+
+        <article class="card">
+          <div class="icon blue" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v6c0 5 3.8 8.4 9 9 5.2-.6 9-4 9-9V7z"/><path d="m9 12 2 2 4-4"/></svg>
+          </div>
+          <h3>Branch-scoped by default</h3>
+          <p>Every read and write is resolved from your membership, never from anything the client sends. One branch can’t see or touch another’s board.</p>
+        </article>
+
+        <article class="card">
+          <div class="icon amber" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h4"/></svg>
+          </div>
+          <h3>Accountable by design</h3>
+          <p>Status changes need a reason, edits keep their before-and-after, and the audit trail is append-only, so a correction is a new entry — never an erased one.</p>
+        </article>
+
+        <article class="card">
+          <div class="icon mint" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          </div>
+          <h3>Reminders that don’t spam</h3>
+          <p>One nudge per task per occurrence, quiet hours respected, and a single overdue reminder each workday — not a notification storm.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <p class="eyebrow">How it works</p>
+      <h2>Three steps, zero ceremony.</h2>
+
+      <div class="steps">
+        <div class="step">
+          <div>
+            <h3>Say what needs doing</h3>
+            <p>Free text, typed or pasted from the day’s thread. BankBuddy reads it as a draft, not as truth.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <h3>Check the draft</h3>
+            <p>Owner, due date and priority come pre-filled and fully editable. Ambiguous dates get confirmed, never quietly guessed.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <h3>Work the board</h3>
+            <p>Due, overdue, blocked and team views — with comments, reassignment and a history that shows what changed and why.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap">
+    <div class="wrap">
+      <p class="eyebrow">Roadmap</p>
+      <h2>Where the build is heading.</h2>
+      <p class="lede">Dates are targets for a single-branch pilot on synthetic data, not commitments to a live deployment.</p>
+
+      <div class="rail">
+        <div class="milestone now">
+          <p class="when">Now</p>
+          <h3>Foundation</h3>
+          <p>Authentication and scope resolution, task model with optimistic concurrency, append-only audit, branch isolation proven by tests.</p>
+        </div>
+        <div class="milestone">
+          <p class="when">Next</p>
+          <h3>Capture &amp; board</h3>
+          <p>Chat-to-task extraction with an editable preview and a hard confirmation gate, plus the dashboard, list, filters and sort.</p>
+        </div>
+        <div class="milestone">
+          <p class="when">Then</p>
+          <h3>Lifecycle &amp; accountability</h3>
+          <p>Status transitions with reasons and history, comments and activity, assignment notifications, and deduplicated reminders with quiet hours.</p>
+        </div>
+        <div class="milestone">
+          <p class="when">Later</p>
+          <h3>The rest of the workflow</h3>
+          <p>Task dependencies, shift handover, recurring tasks, offline sync with visible conflicts, and branch-level analytics.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <p class="eyebrow">FAQ</p>
+      <h2>Fair questions.</h2>
+
+      <details>
+        <summary>Is this connected to a real bank system?</summary>
+        <p>No. BankBuddy is being built as an independent pilot on synthetic data only. It has no connection to core banking, customer records or KYC systems, and nothing here is bank-approved or a compliance opinion.</p>
+      </details>
+
+      <details>
+        <summary>Does the AI create tasks on its own?</summary>
+        <p>No. Extraction only produces a draft that a person edits and explicitly confirms. The model has no write access, and when extraction is unavailable the app falls back to a plain form.</p>
+      </details>
+
+      <details>
+        <summary>Can one branch see another branch’s work?</summary>
+        <p>Not by design, and it is enforced server-side and in the database, not hidden in the interface. Cross-branch access attempts are denial-tested as part of the build.</p>
+      </details>
+
+      <details>
+        <summary>When can I try it?</summary>
+        <p>There is no public sign-up. The pilot is scoped to a small set of branch users, and this page will change when there is something to open. The code and design notes are on GitHub in the meantime.</p>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <span>© <span id="year">2026</span> BankBuddy</span>
+      <span>Built in the open · <a href="https://github.com/Aashupokemon/Bankbuddy" id="repo-link" rel="noopener">source &amp; docs on GitHub</a></span>
+    </div>
+    <p class="note">
+      BankBuddy is an independent project. It is not affiliated with, endorsed by, or approved by any
+      bank, and it is not a compliance or regulatory opinion. All sample data used during development
+      is synthetic.
+    </p>
+  </div>
+</footer>
+
+<script>
+  document.getElementById("year").textContent = new Date().getFullYear();
+</script>
+</body>
+</html>

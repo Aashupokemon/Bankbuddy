@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+.next/
+out/
+coverage/
+
+# environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# local tooling
+.tools/
+.DS_Store
+Thumbs.db
+*.log
