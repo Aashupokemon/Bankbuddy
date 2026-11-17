@@ -26,6 +26,7 @@
     "mobile": "expo start",
     "mobile:android": "expo start --android",
     "mobile:bundle": "npm run bundle --workspace @bankbuddy/mobile",
+    "mobile:apk": "bash ./scripts/build-apk.sh",
     "build": "tsc -b --pretty false"
   },
   "devDependencies": {
