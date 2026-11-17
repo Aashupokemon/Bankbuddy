@@ -92,3 +92,11 @@ code with the copyright notice and permission notice included.
 Note that the license covers the code in this repository. It does not grant rights over the
 BankBuddy name or any third-party material, and it is not a statement that the project is approved
 for use with real bank or customer data.
+
+## Copyright
+
+Copyright © 2026 Aashupokemon.
+
+The copyright notice is part of [`LICENSE`](./LICENSE) and must be retained in all copies or
+substantial portions of the software. The BankBuddy name and the site's visual identity are not
+licensed under MIT. Questions about use beyond the license should go to the copyright holder.
