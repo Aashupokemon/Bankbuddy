@@ -1,0 +1,37 @@
+{
+  "name": "bankbuddy",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shared task workspace for branch banking teams. Pre-alpha.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/worker",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "typecheck": "tsc -b --pretty false",
+    "test": "node --test --import tsx \"packages/*/test/*.test.ts\" \"apps/api/test/*.test.ts\"",
+    "db:migrate": "tsx packages/db/src/cli.ts migrate",
+    "db:seed": "tsx packages/db/src/cli.ts seed",
+    "db:reset": "tsx packages/db/src/cli.ts reset",
+    "setup:local": "npm run db:migrate && npm run db:seed",
+    "api": "tsx apps/api/src/server.ts",
+    "worker": "tsx apps/worker/src/index.ts",
+    "mobile": "expo start",
+    "mobile:android": "expo start --android",
+    "mobile:bundle": "expo export --platform android --output-dir dist-mobile",
+    "build": "tsc -b --pretty false"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

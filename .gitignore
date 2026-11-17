@@ -4,10 +4,19 @@ node_modules/
 
 # build output
 dist/
+dist-mobile/
 build/
-.next/
-out/
 coverage/
+*.tsbuildinfo
+
+# local database and logs
+.data/
+*.log
+
+# expo / react native
+.expo/
+.expo-shared/
+.metro-health-check*
 
 # environment and secrets
 .env
@@ -20,4 +29,3 @@ coverage/
 .tools/
 .DS_Store
 Thumbs.db
-*.log

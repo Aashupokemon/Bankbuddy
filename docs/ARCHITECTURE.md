@@ -1,125 +1,128 @@
 # Architecture
 
-Status: **proposed** — this describes the intended shape of the pilot. No application code exists yet.
+Status: **implemented for the pilot**. Synthetic data only; no bank system is touched.
 
-This document is a condensed, decision-oriented view. The reasoning, spec gaps and open questions
-live in [`../IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md).
+This document describes what is in the repository. The reasoning, spec gaps and open questions live
+in [`../IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md).
 
-## 1. Stack
+## 1. Stack (as built)
 
 | Layer | Choice | Why |
 | --- | --- | --- |
-| Web client | React + TypeScript + Vite, mobile-first PWA | Branch staff work on phones; no app-store distribution for a pilot |
-| API | NestJS on Node 22, versioned under `/api/v1` | Structured modules, guards and interceptors map cleanly onto the permission matrix |
-| Data | PostgreSQL 16 + Prisma, with hand-written SQL for RLS, triggers and audit | Row-level security and append-only guarantees must live in the database, not the ORM |
-| Jobs | Separate worker process polling a Postgres job table | Reminders and extraction retries need at-least-once semantics and no extra infrastructure |
-| Extraction | Provider-neutral adapter + deterministic rule-based fallback | The AI is swappable, optional, and can never be a hard dependency |
+| Android client | React Native + Expo, TypeScript | A real Android app without an app-store release; no JDK/SDK needed to develop or bundle |
+| API | Express 5 + Zod, `/api/v1` | Small surface, explicit middleware, one validation source shared with the client |
+| Data | PostgreSQL via `pg`, or PGlite (Postgres compiled to WASM) | Identical semantics either way: RLS, triggers and constraints are all real Postgres |
+| Worker | Node process polling the reminder tables | No extra infrastructure; idempotent by dedupe key |
+| Shared | `@bankbuddy/contracts`, `@bankbuddy/date` | The permission matrix, state machine and date rules exist once |
 
-Rejected on purpose: BaaS/headless backends (they hide the row-level isolation this project has to
-prove), NoSQL (the model is relational and audit-shaped), chat UI SDKs (they own the conversation
-state we must not persist), and any hosted vendor chosen on the project's behalf — hosting region,
-KMS and vendor review are bank decisions, not implementation conveniences.
+Two deliberate departures from the original plan, both driven by the environment this was built in
+(no Docker, no local Postgres, no Android SDK):
+
+- **`pg` + hand-written SQL instead of Prisma.** Row-level security needs a per-request
+  `SET LOCAL app.branch_id` plus a role switch, which is awkward through an ORM, and PGlite cannot be
+  reached by Prisma at all. Hand-written SQL also keeps the audit hash chain and RLS policies visible
+  in review.
+- **Express instead of NestJS.** The permission checks are four small functions; a full DI container
+  would add indirection without adding safety.
 
 ## 2. Repository layout
 
 ```
-apps/
-  api/         NestJS HTTP API (auth, scope resolution, tasks, comments, audit)
-  worker/      scheduler: reminders, notification fan-out, extraction retries
-  web/         React PWA
-packages/
-  contracts/   Zod schemas + generated OpenAPI types shared by api and web
-  date/        the single date/time service (timezone, precision, DST)
-  db/          Prisma schema, migrations, RLS and trigger SQL, seed data
-ops/
-  docker-compose.yml, synthetic seed fixtures, runbooks
+apps/api/src/          server.ts (boot), app.ts (routes), auth.ts, tasks.ts, collaboration.ts,
+                       assistant.ts, admin.ts, sync.ts, http.ts
+apps/api/test/         end-to-end API tests against a real (in-memory) Postgres
+apps/worker/src/       reminder generation and delivery
+apps/mobile/src/       App.tsx (shell), api.ts (client + offline queue), screens/, ui.tsx, theme.ts
+packages/contracts/    Zod schemas, permission matrix, state machine, DTO types
+packages/date/         timezone/precision service + tests
+packages/db/src/       driver.ts (pg + PGlite), migrate.ts, seed.ts, migrations/*.sql
 ```
-
-The `date` package exists because time handling is the most likely source of silent, expensive bugs
-(see §6).
 
 ## 3. Domain model
 
-Core entities and the relationships the plan depends on:
+`workspaces → branches → memberships(user, branch, role)`, plus:
 
-- `workspaces` → `branches` → `memberships` (user, branch, role). Role is resolved per request from
-  membership, never accepted from the client.
-- `tasks` — branch-scoped, versioned (`version` integer used for `If-Match`), with `owner_id`
-  nullable **plus** an explicit "unassigned" intent flag so NULL is unambiguous.
+- `tasks` — branch-scoped, `version` for optimistic concurrency, `due_at` + `due_precision`,
+  explicit-unassigned flag, blocked reason, completion stamps, soft delete, recurrence.
 - `task_comments`, `task_dependencies`, `task_events` (activity feed), `audit_events`.
-- `reminders` — one row per scheduled occurrence with a `dedupe_key` unique constraint.
-- `notification_preferences`, `branch_settings`, `categories`, `holidays`.
+- `reminders` (one row per occurrence, unique dedupe key), `notifications`,
+  `notification_preferences`, `branch_settings`, `categories`, `holidays`, `sessions`,
+  `handovers`/`handover_tasks`, `sync_operations`, `jobs`.
 
-Schema additions required beyond the source specification are tabulated in
-[`../IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) §5.3. The important ones: due-date
-precision, blocked reason, `completed_at/by`, soft delete, category table, branch-scoped settings,
-audit hash chain link, and `branch_id` denormalised onto child tables.
+Every branch-owned table carries `branch_id`, including child tables, so RLS needs no joins.
 
 ## 4. Permission matrix
 
-Roles: `employee`, `lead`, `manager`, `workspace admin`, `auditor`.
+Roles: `employee`, `lead`, `manager`, `workspace_admin`, `auditor`. Encoded once in
+`packages/contracts` and consumed by both the API and the Android client.
 
 | Action | employee | lead | manager | admin | auditor |
 | --- | --- | --- | --- | --- | --- |
 | Read own tasks | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Read branch tasks | scoped | ✅ | ✅ | ✅ | ✅ (read-only) |
+| Read branch tasks | scoped | ✅ | ✅ | ✅ | ✅ |
 | Create task | ✅ | ✅ | ✅ | ✅ | ❌ |
 | Edit own / any task | own | branch | branch | branch | ❌ |
 | Change status | own | branch | branch | branch | ❌ |
-| Reassign others | ❌ | ✅ | ✅ | ✅ | ❌ |
-| Archive · change settings · edit categories | ❌ | ❌ | ✅ | ✅ | ❌ |
-| Read audit events | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Assign to others | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Archive · settings | ❌ | ❌ | ✅ | ✅ | ❌ |
+| Read audit | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Analytics | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Manage memberships | ❌ | ❌ | ❌ | ✅ | ❌ |
 
-Every cell is enforced server-side and backed by a negative test. The client only hides what the
-server would refuse.
+Employees never receive another person's task from the list endpoint, even if they ask for the team
+scope. Every refusal is tested (`apps/api/test/api.test.ts`).
 
 ## 5. Task lifecycle
 
 ```
-open ──▶ in_progress ──▶ done ──▶ archived
-  │            │
-  ├──▶ blocked ┘
-  └──▶ cancelled
+open ⇄ in_progress → done → archived
+  │         │
+  ├→ blocked ┘
+  └→ cancelled
 ```
 
-Rules that the state machine must carry:
+- Transitions are validated against an allow-list, not "any status to any status".
+- `blocked` requires a non-sensitive reason; cancelling and reopening require a reason.
+- `done` stamps `completed_at`/`completed_by`; leaving `done` clears them.
+- Reopening cancelled or archived work is manager-only; an owner may reopen their own completed task.
+- Every transition writes a `task_events` row with before/after and an append-only audit row.
 
-- transitions are validated against an allow-list, not "any status to any status";
-- a transition to `blocked` requires a non-sensitive reason;
-- `done` stamps `completed_at` / `completed_by`; reopening clears them and is audited;
-- `archived` and `cancelled` are terminal and read-only except for audit-visible reopening by a
-  manager;
-- each transition writes before/after state to the activity feed and an append-only audit row.
+## 6. Data integrity
 
-## 6. Data integrity enforcement
-
-Application code alone is not trusted here.
-
-1. **Isolation** — Postgres RLS policies keyed on the authenticated member's branch, applied in
-   addition to query-level scoping. A missing `WHERE` clause must fail closed.
-2. **Concurrency** — `PATCH` requires `If-Match: <version>`; mismatches return `409` with the current
-   server state so the client can reconcile instead of overwriting.
-3. **Audit** — `audit_events` is append-only (UPDATE/DELETE revoked, enforced by trigger), carries
-   actor, branch, entity, before/after, reason and a `prev_hash` chain so tampering is detectable.
-   Reading audit is itself audited.
-4. **Time** — one service converts local input into UTC instants and preserves whether a due date was
-   date-only, time-only-in-timezone, or a full instant. Ambiguous DST times are surfaced for
-   confirmation; a date-only due value never silently becomes midnight.
-5. **AI boundary** — extraction runs on a path with no write access, is schema-validated, is
-   allow-listed, is kill-switchable, and its output is discarded unless a human confirms.
-6. **Reminders** — dedupe by unique key per occurrence, one overdue reminder per workday, quiet hours
-   and holidays honoured, delivery recorded.
+1. **Isolation.** Each request opens a transaction, sets `app.branch_id`/`app.user_id`, and switches
+   to the non-owner `bankbuddy_app` role so row-level security is actually enforced. Queries are also
+   scoped by `branch_id` explicitly — a missing filter fails closed, not open.
+2. **Concurrency.** `PATCH` and status changes require the current version (`If-Match` or body
+   `version`); a mismatch returns `409` with the current server state.
+3. **Audit.** `audit_events` is append-only (UPDATE/DELETE revoked *and* blocked by a trigger), hashes
+   each row over the previous hash plus its content, and takes a per-branch advisory lock so the chain
+   cannot fork. Reads of audit are audited. `GET /audit/verify` recomputes the chain in SQL.
+4. **Time.** `@bankbuddy/date` is the only place dates are constructed. Date-only values keep
+   `due_precision = 'date'` and never silently become midnight or end-of-business; overdue means "past
+   the end of the local day". DST gaps and overlaps are reported, not coerced.
+5. **AI boundary.** Extraction runs with no write access, is schema-validated, redacts
+   card/account/phone/email/IFSC patterns, is kill-switchable, and falls back to the rule extractor.
+6. **Reminders.** Unique dedupe key per occurrence, one overdue nudge per workday, quiet hours defer
+   delivery, holidays suppress overdue nudges, failures are retried with an attempt counter.
 
 ## 7. API surface
 
-Human-facing endpoints under `/api/v1`: `GET /me`, `GET|POST /tasks`, `GET|PATCH /tasks/{id}`,
-task comments and dependencies, handover propose/accept/decline, `POST /assistant/extract`,
-notifications and acknowledgement, `GET /analytics/summary`, `GET /audit/events`, and
-`POST /sync/operations` for offline replay. Errors are RFC 7807 problem details.
+`/api/v1`: `me`, `members`, `dashboard`, `tasks` (list/create/get/patch/delete), `tasks/{id}/status`,
+`activity`, `comments`, `dependencies`, `handovers` (+ respond), `assistant/extract`, `notifications`
+(+ ack), `audit/events`, `audit/verify`, `analytics/summary`, `settings`, `categories`,
+`sync/operations`, `auth/dev-login`, `auth/logout`. Errors are RFC 7807 problem details.
 
-## 8. Non-goals
+## 8. Client
 
-No core banking or KYC integration, no customer data, no employee ranking, no autonomous AI writes,
-no public sign-up. Anything that would require a bank approval is out of scope until that approval
-exists.
+The Android app keeps the session token in Expo SecureStore, renders the board from
+`/dashboard` + `/tasks`, and shows an editable extraction draft before anything is created. Writes
+that fail for lack of connectivity are queued in memory and replayed through `/sync/operations` with
+client-generated ids, so a retry applies each change once and a version mismatch surfaces as a
+conflict rather than an overwrite.
+
+## 9. Known gaps
+
+No APK artifact is built or published; no UI automation; the optional AI provider path has not been
+exercised against a live model (only the rules fallback is covered by tests); offline queue is
+in-memory and does not survive an app restart; `sync` does not yet resolve conflicts, it reports
+them.

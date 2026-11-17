@@ -1,82 +1,78 @@
 # Roadmap
 
-Status: **planning**. The site is live; the application is not built yet.
+Status: **M0–M7 implemented for the pilot**, on synthetic data, with the gaps listed at the bottom.
 
-Sequencing follows one rule: the security backbone (isolation, permissions, concurrency, audit) is
-proven before features are layered on top, because retrofitting those guarantees is the most
-expensive mistake available to this project.
+Sequencing followed one rule: the security backbone (isolation, permissions, concurrency, audit) was
+built and tested before features were layered on top.
 
-Estimates are engineer-days for a single experienced developer, not calendar commitments.
+## M0 — Foundations ✅
 
-## M0 — Foundations (~3 days)
+npm workspaces (`apps/api`, `apps/worker`, `apps/mobile`, `packages/*`), strict TypeScript, migration
+runner, synthetic two-branch seed, CI workflow, `.env.example`.
 
-Monorepo scaffold, Docker Compose Postgres, Prisma baseline schema with the §5.3 additions, CI that
-runs typecheck, lint and tests, synthetic two-branch seed.
+## M1 — Security backbone ✅
 
-**Done when** `docker compose up` yields a seeded database and CI is green on an empty app.
+Dev sign-in issuing session tokens (hashed at rest), workspace→branch→role resolution from
+membership, permission matrix in `packages/contracts`, row-level security on every branch-owned table
+enforced through a non-owner role, append-only audit with a per-branch hash chain, and a denial test
+per matrix edge — including cross-branch reads returning 404 rather than 403.
 
-## M1 — Security backbone (~6 days)
+## M2 — Task core ✅
 
-Local OIDC stub, session/device table, workspace→branch→role resolution, permission matrix, RLS
-policies, append-only audit with hash chain, denial-test table covering every matrix cell and
-cross-branch access.
+Create/read/update with `If-Match`-style versioning and `409` reconciliation, status state machine
+with required reasons, activity feed with before/after, soft delete, and list filtering/sorting by
+due date then priority.
 
-**Done when** every permission cell and every cross-branch request has a failing test proving denial.
+## M3 — Capture ✅
 
-## M2 — Task core (~5 days)
+`POST /assistant/extract` with schema validation, sensitive-data redaction, an optional
+OpenAI-compatible provider, a deterministic rule extractor as fallback, a kill switch, and an
+explicit `requiresConfirmation` contract. Extraction never writes.
 
-Create/read/update with `If-Match` versioning and `409` reconciliation, status state machine with
-required reasons, activity feed with before/after, soft delete, list endpoint with filters and sort
-(due, then priority).
+## M4 — Board & lifecycle ✅
 
-**Done when** two concurrent writers cannot silently overwrite each other, and no transition is
-possible off the allow-list.
+Dashboard counts (overdue, due today, blocked, in progress, mine, unassigned), upcoming list, team
+load, task detail with comments, reassignment, and an Android client for all of it.
 
-## M3 — Capture (~4 days)
+## M5 — Reminders ✅
 
-`POST /assistant/extract`: allow-list, schema validation, sensitive-data guard, provider-neutral
-adapter, deterministic fallback, kill switch, and a client preview step with a hard confirmation
-gate.
+Reminder rows generated per occurrence with unique dedupe keys, delivery honouring quiet hours and
+holidays, retries with an attempt counter, and notification fan-out to the owner (or the branch leads
+when unowned).
 
-**Done when** extraction output with no confirmation creates zero rows, and the kill switch leaves
-form-based creation fully working.
+## M6 — P1 workflow ✅
 
-## M4 — Board & lifecycle (~4 days)
+Dependencies with recursive cycle detection, shift handover (propose → accept/decline, ownership
+moves on accept), recurrence materialised on completion, branch-configurable categories.
 
-Dashboard (due today, overdue, blocked, team), filters, sorting, detail view, comments, assignment
-and reassignment with notifications.
+## M7 — Resilience & insight ✅ / partly
 
-**Done when** the MVP acceptance path works end to end on a phone viewport.
+Offline operations endpoint with idempotent replay and explicit conflicts; analytics summary; audit
+verification endpoint; accessibility labels and 44pt touch targets throughout the app.
 
-## M5 — Reminders (~3 days)
+## What is not done
 
-Job table, scheduler worker, due and overdue reminder rules, dedupe keys, quiet hours, holidays,
-retries with backoff, delivery audit.
-
-**Done when** duplicate suppression holds under a forced double-run of the scheduler.
-
-## M6 — P1 workflow (~6 days)
-
-Dependencies with cycle detection, shift handover propose/accept/decline, recurring tasks materialised
-under an explicit rule, branch-configurable categories.
-
-## M7 — P1 resilience & insight (~5 days)
-
-Offline operation queue with idempotent replay and visible conflicts, analytics summary, accessibility
-pass (`axe` clean on primary flows), performance budget check.
+- **No APK artifact.** The JS bundle builds (`npm run mobile:bundle`); producing an installable APK
+  needs EAS or a local Android SDK, neither of which is available in this environment.
+- **No UI automation.** Backend behaviour is covered by 38 tests; the screens are typechecked and
+  bundled, not driven.
+- **Offline queue is in-memory** and does not survive an app restart.
+- **Sync reports conflicts, it does not merge them.**
+- **The AI provider path is untested against a live model** — only the rule fallback is exercised.
+- **No deployment.** No staging environment, no load test, no penetration test, no accessibility
+  audit beyond labels and target sizes.
 
 ## Definition of done for the pilot
 
-- Two branches seeded; neither can read or write the other's data, proven by tests.
-- A task can be created by chat or form, edited, reassigned, blocked, completed and reopened with a
-  complete, tamper-evident trail.
-- Reminders are deduplicated and respect quiet hours.
-- Audit export is readable and attributable.
-- The primary flows pass an accessibility check and work on a 360px viewport.
-- No real customer or bank data anywhere in the repository, fixtures or test runs.
+- Two branches seeded; neither can read or write the other's data, proven by tests. ✅
+- A task can be created by chat capture or form, edited, reassigned, blocked, completed and reopened
+  with a complete tamper-evident trail. ✅
+- Reminders are deduplicated and respect quiet hours. ✅
+- Audit export is readable and attributable. ✅ (JSON via the API; no CSV export yet)
+- Accessibility check and a 360px viewport pass. ⚠️ Labels and target sizes are in place; no audit run.
+- No real customer or bank data anywhere. ✅
 
 ## Explicitly out of scope
 
 Transaction systems, customer/KYC data, core banking integrations, employee ranking, autonomous AI
-actions, and any deployment to a bank environment. Those are decisions for a sponsor and a security
-review, not for this plan.
+actions, and any deployment to a bank environment.

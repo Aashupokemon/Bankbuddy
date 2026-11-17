@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "BankBuddy",
+    "slug": "bankbuddy",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "bankbuddy",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "android": {
+      "package": "com.bankbuddy.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#070c18"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "extra": {
+      "apiUrl": "http://10.0.2.2:8787"
+    }
+  }
+}

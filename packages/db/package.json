@@ -1,0 +1,14 @@
+{
+  "name": "@bankbuddy/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "pg": "^8.13.1"
+  }
+}

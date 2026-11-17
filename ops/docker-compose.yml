@@ -1,0 +1,23 @@
+# Optional: a real Postgres for development instead of the embedded PGlite instance.
+#   docker compose -f ops/docker-compose.yml up -d
+#   export DATABASE_URL=postgres://bankbuddy:bankbuddy@localhost:5432/bankbuddy
+#   npm run db:reset
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bankbuddy
+      POSTGRES_PASSWORD: bankbuddy
+      POSTGRES_DB: bankbuddy
+    ports:
+      - "5432:5432"
+    volumes:
+      - bankbuddy-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bankbuddy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  bankbuddy-pg:
