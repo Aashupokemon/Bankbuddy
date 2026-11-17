@@ -86,5 +86,9 @@ See [`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md). Security issues should fol
 
 ## License
 
-No license has been chosen yet. Until one is added, all rights are reserved and the code is public
-for reading and review rather than reuse.
+Released under the [MIT License](./LICENSE). You are free to use, modify and redistribute this
+code with the copyright notice and permission notice included.
+
+Note that the license covers the code in this repository. It does not grant rights over the
+BankBuddy name or any third-party material, and it is not a statement that the project is approved
+for use with real bank or customer data.
