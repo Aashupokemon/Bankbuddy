@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, SafeAreaView, StatusBar, StyleSheet, Text
 
 import type { MeResponse } from "@bankbuddy/contracts";
 
-import { api, clearToken, loadToken, queuedCount } from "./api";
+import { api, clearToken, flushQueue, loadToken, subscribeQueue } from "./api";
 import BoardScreen from "./screens/BoardScreen";
 import CreateScreen from "./screens/CreateScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -19,6 +19,7 @@ export default function App(): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("board");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [queued, setQueued] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -34,6 +35,19 @@ export default function App(): React.JSX.Element {
   }, []);
 
   const refresh = useCallback(() => setRefreshKey((key) => key + 1), []);
+
+  // The pending count is read from device storage, so it is correct immediately after a relaunch.
+  useEffect(() => subscribeQueue(setQueued), []);
+
+  // Replay anything left over from a previous session as soon as we know who we are.
+  useEffect(() => {
+    if (!me) return;
+    void flushQueue()
+      .then((outcome) => {
+        if (outcome.applied > 0) refresh();
+      })
+      .catch(() => undefined);
+  }, [me, refresh]);
 
   if (booting) {
     return (
@@ -100,7 +114,7 @@ export default function App(): React.JSX.Element {
           <TabButton label="Board" active={tab === "board"} onPress={() => setTab("board")} />
           <TabButton label="Capture" active={tab === "capture"} onPress={() => setTab("capture")} />
           <TabButton
-            label={queuedCount() > 0 ? `More (${queuedCount()})` : "More"}
+            label={queued > 0 ? `More (${queued})` : "More"}
             active={tab === "more"}
             onPress={() => setTab("more")}
           />

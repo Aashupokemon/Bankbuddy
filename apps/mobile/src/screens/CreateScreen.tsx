@@ -3,7 +3,7 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-nat
 
 import { taskPriorities, type ExtractResponse, type MeResponse, type TaskPriority } from "@bankbuddy/contracts";
 
-import { ApiFailure, api, queueOperation } from "../api";
+import { ApiFailure, api, enqueueOperation } from "../api";
 import { colors, spacing } from "../theme";
 import { Badge, Button, Card, Chip, Field, Heading } from "../ui";
 
@@ -100,8 +100,15 @@ export default function CreateScreen({
       onCreated(created.id);
     } catch (failure) {
       if (failure instanceof ApiFailure && failure.status === 0) {
-        queueOperation({ id: newId(), kind: "task.create", payload, at: new Date().toISOString() });
-        setMessage("You are offline. The task is queued and will be sent when the connection returns.");
+        const pending = await enqueueOperation({
+          id: newId(),
+          kind: "task.create",
+          payload,
+          at: new Date().toISOString(),
+        });
+        setMessage(
+          `You are offline. The task is saved on this device (${pending} pending) and will be sent when the connection returns.`,
+        );
         onCreated();
       } else {
         setMessage(failure instanceof Error ? failure.message : "Could not create the task");

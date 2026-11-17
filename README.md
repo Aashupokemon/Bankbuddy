@@ -36,7 +36,7 @@ customer/KYC data, core banking integrations, employee ranking, autonomous AI wr
 
 | Layer | Built with |
 | --- | --- |
-| Android app | React Native + Expo (TypeScript), Expo SecureStore for the session token |
+| Android app | React Native + Expo (TypeScript), SecureStore for the session token, AsyncStorage for the offline queue |
 | API | Express 5 + Zod, versioned under `/api/v1` |
 | Data | PostgreSQL 16+ via `pg`, or embedded PGlite (real Postgres in WASM) for local runs and tests |
 | Worker | Node process that materialises and delivers reminders |
@@ -70,7 +70,7 @@ npm install
 npm run db:reset          # migrate + seed two synthetic branches
 npm run api               # http://127.0.0.1:8787
 npm run worker            # optional: reminder scheduler
-npm test                  # 38 tests: isolation, versioning, audit, extraction, reminders, sync
+npm test                  # 47 tests: isolation, versioning, audit, extraction, reminders, sync, offline queue
 npm run typecheck
 ```
 

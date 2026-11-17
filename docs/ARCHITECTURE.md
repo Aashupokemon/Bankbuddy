@@ -116,13 +116,14 @@ open ⇄ in_progress → done → archived
 
 The Android app keeps the session token in Expo SecureStore, renders the board from
 `/dashboard` + `/tasks`, and shows an editable extraction draft before anything is created. Writes
-that fail for lack of connectivity are queued in memory and replayed through `/sync/operations` with
-client-generated ids, so a retry applies each change once and a version mismatch surfaces as a
-conflict rather than an overwrite.
+that fail for lack of connectivity are persisted to device storage (AsyncStorage) and replayed
+through `/sync/operations` with client-generated ids — on the next app launch if necessary — so a
+restart loses nothing, a retry applies each change once, and a version mismatch surfaces as a
+conflict rather than an overwrite. An operation only leaves the queue once the server has answered
+for it; a dropped response means it is sent again and answered `replayed`.
 
 ## 9. Known gaps
 
 No APK artifact is built or published; no UI automation; the optional AI provider path has not been
-exercised against a live model (only the rules fallback is covered by tests); offline queue is
-in-memory and does not survive an app restart; `sync` does not yet resolve conflicts, it reports
-them.
+exercised against a live model (only the rules fallback is covered by tests); the offline queue is
+durable, but `sync` reports conflicts rather than merging them.

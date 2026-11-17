@@ -61,16 +61,25 @@ The package name is `com.bankbuddy.app` and the app is configured in `apps/mobil
 
 ## Offline behaviour
 
-Writes that fail with a network error are queued in memory with a client-generated id and replayed
-through `POST /api/v1/sync/operations`. The API applies each operation at most once and reports version
-mismatches as `conflict` instead of overwriting. The queue does not survive an app restart yet, and
-conflicts are reported rather than merged.
+Writes that fail with a network error are written to AsyncStorage with a client-generated id and
+replayed through `POST /api/v1/sync/operations`. The queue survives an app restart: on launch, once
+the session is restored, anything left over is replayed automatically, and the "More" tab shows the
+pending count with a manual **Sync now** button.
+
+The API applies each operation at most once, keyed by that id. An operation is removed from the queue
+only after the server has answered for it, so a dropped response means it is retried and answered
+`replayed` rather than applied twice. Version mismatches come back as `conflict` — reported, not
+merged — and the entry is then dropped so it cannot loop forever.
 
 ## Configuration
 
 | Variable | Meaning |
 | --- | --- |
 | `EXPO_PUBLIC_API_URL` | API base URL. Default `http://10.0.2.2:8787`. |
+
+The offline queue lives under the `bankbuddy.offline-queue.v1` AsyncStorage key and is verified by
+`apps/mobile/test/offlineQueue.test.ts`, which simulates a relaunch by opening a second queue over
+the same storage.
 
 The session token is stored with Expo SecureStore and cleared on sign out. No other data is persisted
 on the device.

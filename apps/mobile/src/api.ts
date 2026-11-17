@@ -1,4 +1,7 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
+
+import { createOfflineQueue, type FlushOutcome } from "./offlineQueue";
 
 import type {
   DashboardResponse,
@@ -229,31 +232,31 @@ export const api = {
 };
 
 /* -------------------------------------------------------------------------------------------- *
- * Offline queue: writes attempted without a connection are kept and replayed with their own id,
- * which the API uses for idempotency.
+ * Offline queue: writes attempted without a connection are persisted to device storage and replayed
+ * with their own id, which the API uses for idempotency. The queue therefore survives a restart and
+ * each operation is still applied at most once.
  * ------------------------------------------------------------------------------------------ */
 
-const queue: SyncOperation[] = [];
+const offlineQueue = createOfflineQueue({
+  getItem: (key) => AsyncStorage.getItem(key),
+  setItem: (key, value) => AsyncStorage.setItem(key, value),
+});
 
-export function queueOperation(operation: SyncOperation): void {
-  queue.push(operation);
+export function enqueueOperation(operation: SyncOperation): Promise<number> {
+  return offlineQueue.enqueue(operation);
 }
 
-export function queuedCount(): number {
-  return queue.length;
+export function queuedCount(): Promise<number> {
+  return offlineQueue.count();
 }
 
-export async function flushQueue(): Promise<{ applied: number; conflicts: number; remaining: number }> {
-  if (queue.length === 0) return { applied: 0, conflicts: 0, remaining: 0 };
-  const batch = queue.slice(0, 20);
-  const response = await api.sync(batch);
-  const settled = new Set(response.results.map((r) => r.id));
-  for (let i = queue.length - 1; i >= 0; i -= 1) {
-    if (settled.has(queue[i]!.id)) queue.splice(i, 1);
-  }
-  return {
-    applied: response.results.filter((r) => r.status === "applied" || r.status === "replayed").length,
-    conflicts: response.results.filter((r) => r.status === "conflict").length,
-    remaining: queue.length,
-  };
+export function subscribeQueue(listener: (count: number) => void): () => void {
+  return offlineQueue.subscribe(listener);
+}
+
+export function flushQueue(): Promise<FlushOutcome> {
+  return offlineQueue.flush(async (batch) => {
+    const response = await api.sync(batch);
+    return response.results;
+  });
 }

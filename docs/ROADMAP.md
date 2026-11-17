@@ -47,8 +47,9 @@ moves on accept), recurrence materialised on completion, branch-configurable cat
 
 ## M7 — Resilience & insight ✅ / partly
 
-Offline operations endpoint with idempotent replay and explicit conflicts; analytics summary; audit
-verification endpoint; accessibility labels and 44pt touch targets throughout the app.
+Offline operations endpoint with idempotent replay and explicit conflicts; a durable on-device queue
+that survives an app restart and replays on the next launch; analytics summary; audit verification
+endpoint; accessibility labels and 44pt touch targets throughout the app.
 
 ## What is not done
 
@@ -56,7 +57,6 @@ verification endpoint; accessibility labels and 44pt touch targets throughout th
   needs EAS or a local Android SDK, neither of which is available in this environment.
 - **No UI automation.** Backend behaviour is covered by 38 tests; the screens are typechecked and
   bundled, not driven.
-- **Offline queue is in-memory** and does not survive an app restart.
 - **Sync reports conflicts, it does not merge them.**
 - **The AI provider path is untested against a live model** — only the rule fallback is exercised.
 - **No deployment.** No staging environment, no load test, no penetration test, no accessibility

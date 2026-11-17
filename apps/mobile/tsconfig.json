@@ -7,7 +7,8 @@
     "moduleResolution": "bundler",
     "module": "esnext",
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["**/*.ts", "**/*.tsx", "../../packages/contracts/src/*.ts"],
   "exclude": ["node_modules"]

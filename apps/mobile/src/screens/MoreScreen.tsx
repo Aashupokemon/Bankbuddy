@@ -3,7 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { can, type MeResponse, type NotificationDto } from "@bankbuddy/contracts";
 
-import { api, flushQueue, queuedCount } from "../api";
+import { api, flushQueue, subscribeQueue } from "../api";
 import { colors, spacing } from "../theme";
 import { Badge, Button, Card, Empty, Heading } from "../ui";
 
@@ -47,7 +47,7 @@ export default function MoreScreen({
     medianCompletionHours: number | null;
     onTimeRate: number | null;
   } | null>(null);
-  const [queue, setQueue] = useState(queuedCount());
+  const [queue, setQueue] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -84,6 +84,8 @@ export default function MoreScreen({
     void load();
   }, [load]);
 
+  useEffect(() => subscribeQueue(setQueue), []);
+
   const verify = async (): Promise<void> => {
     setBusy(true);
     try {
@@ -102,9 +104,9 @@ export default function MoreScreen({
       const result = await flushQueue();
       setQueue(result.remaining);
       setMessage(
-        result.applied === 0 && result.conflicts === 0
+        result.applied === 0 && result.conflicts === 0 && result.rejected === 0
           ? "Nothing waiting to sync."
-          : `Synced ${result.applied} change(s), ${result.conflicts} conflict(s).`,
+          : `Synced ${result.applied} change(s), ${result.conflicts} conflict(s), ${result.rejected} rejected.`,
       );
       await load();
     } catch (failure) {
