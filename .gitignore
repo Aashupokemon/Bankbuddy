@@ -29,3 +29,10 @@ coverage/
 .tools/
 .DS_Store
 Thumbs.db
+
+# generated native projects (expo prebuild)
+apps/mobile/android/
+apps/mobile/ios/
+
+# Built release APK (regenerate with the steps in docs/MOBILE.md)
+artifacts/*.apk

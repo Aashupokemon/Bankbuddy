@@ -25,7 +25,7 @@
     "worker": "tsx apps/worker/src/index.ts",
     "mobile": "expo start",
     "mobile:android": "expo start --android",
-    "mobile:bundle": "expo export --platform android --output-dir dist-mobile",
+    "mobile:bundle": "npm run bundle --workspace @bankbuddy/mobile",
     "build": "tsc -b --pretty false"
   },
   "devDependencies": {

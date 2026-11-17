@@ -88,8 +88,10 @@ The app talks to `http://10.0.2.2:8787` by default (the emulator's route to the 
 device set `EXPO_PUBLIC_API_URL` to your machine's LAN address. Sign in with one of the synthetic
 users the app lists — there are no passwords.
 
-A ready-to-install APK is not committed. Build one with EAS or a local Android SDK; the JS bundle is
-verified to build here (`npm run mobile:bundle`). See [`docs/MOBILE.md`](./docs/MOBILE.md).
+A release APK has been built locally and is not committed (60 MB): `artifacts/bankbuddy-1.0.0-release.apk`,
+installed with `adb install artifacts/bankbuddy-1.0.0-release.apk`. It ships the JS bundle but no backend,
+so point it at a running API (`npm run api`) first. `npm run mobile:bundle` and the exact Gradle recipe are
+documented in [`docs/MOBILE.md`](./docs/MOBILE.md).
 
 ## Documentation
 
