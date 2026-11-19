@@ -3,12 +3,23 @@ import { ActivityIndicator, Pressable, SafeAreaView, StatusBar, StyleSheet, Text
 
 import type { MeResponse } from "@bankbuddy/contracts";
 
-import { api, clearToken, flushQueue, loadToken, subscribeQueue } from "./api";
+import {
+  api,
+  clearToken,
+  flushQueue,
+  isDemoMode,
+  loadToken,
+  resetDemoMode,
+  subscribeDemoMode,
+  subscribeQueue,
+} from "./api";
 import BoardScreen from "./screens/BoardScreen";
 import CreateScreen from "./screens/CreateScreen";
 import LoginScreen from "./screens/LoginScreen";
 import MoreScreen from "./screens/MoreScreen";
+import ShiftScreen from "./screens/ShiftScreen";
 import TaskScreen from "./screens/TaskScreen";
+import TemplatesScreen from "./screens/TemplatesScreen";
 import { colors, radius, spacing } from "./theme";
 
 type Tab = "board" | "capture" | "more";
@@ -18,8 +29,10 @@ export default function App(): React.JSX.Element {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [tab, setTab] = useState<Tab>("board");
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<"templates" | "shift" | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [queued, setQueued] = useState(0);
+  const [demo, setDemo] = useState(isDemoMode());
 
   useEffect(() => {
     (async () => {
@@ -38,6 +51,9 @@ export default function App(): React.JSX.Element {
 
   // The pending count is read from device storage, so it is correct immediately after a relaunch.
   useEffect(() => subscribeQueue(setQueued), []);
+
+  // Demo data is only ever a fallback, but it must be impossible to mistake for live branch data.
+  useEffect(() => subscribeDemoMode(setDemo), []);
 
   // Replay anything left over from a previous session as soon as we know who we are.
   useEffect(() => {
@@ -80,6 +96,10 @@ export default function App(): React.JSX.Element {
       onBack={() => setTaskId(null)}
       onChanged={refresh}
     />
+  ) : screen === "templates" ? (
+    <TemplatesScreen me={me} onBack={() => setScreen(null)} onChanged={refresh} />
+  ) : screen === "shift" ? (
+    <ShiftScreen me={me} onBack={() => setScreen(null)} onChanged={refresh} />
   ) : tab === "board" ? (
     <BoardScreen me={me} onOpenTask={setTaskId} refreshKey={refreshKey} />
   ) : tab === "capture" ? (
@@ -97,26 +117,63 @@ export default function App(): React.JSX.Element {
       onSignOut={() => {
         void api.logout().catch(() => undefined);
         void clearToken();
+        resetDemoMode();
         setMe(null);
         setTaskId(null);
+        setScreen(null);
       }}
       onOpenTask={setTaskId}
+      onOpenTemplates={() => setScreen("templates")}
+      onOpenShift={() => setScreen("shift")}
     />
   );
 
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" />
+      {demo ? (
+        <Pressable
+          testID="demo-banner"
+          accessibilityRole="button"
+          accessibilityLabel="Demo data on this device. Tap to retry the live API."
+          onPress={() => {
+            resetDemoMode();
+            refresh();
+          }}
+          style={styles.demoBanner}
+        >
+          <Text style={styles.demoBannerText}>
+            Demo data on this device — nothing here came from the server. Tap to retry live data.
+          </Text>
+        </Pressable>
+      ) : null}
       <View style={styles.content}>{content}</View>
 
-      {taskId ? null : (
+      {taskId || screen ? null : (
         <View style={styles.tabBar}>
-          <TabButton label="Board" active={tab === "board"} onPress={() => setTab("board")} />
-          <TabButton label="Capture" active={tab === "capture"} onPress={() => setTab("capture")} />
+          <TabButton
+            label="Board"
+            active={tab === "board"}
+            onPress={() => {
+              setScreen(null);
+              setTab("board");
+            }}
+          />
+          <TabButton
+            label="Capture"
+            active={tab === "capture"}
+            onPress={() => {
+              setScreen(null);
+              setTab("capture");
+            }}
+          />
           <TabButton
             label={queued > 0 ? `More (${queued})` : "More"}
             active={tab === "more"}
-            onPress={() => setTab("more")}
+            onPress={() => {
+              setScreen(null);
+              setTab("more");
+            }}
           />
         </View>
       )}
@@ -157,6 +214,16 @@ const styles = StyleSheet.create({
   },
   brand: { color: colors.text, fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
   content: { flex: 1 },
+  demoBanner: {
+    backgroundColor: colors.amberDark,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.amber,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  demoBannerText: { color: colors.amber, fontSize: 12, fontWeight: "600", lineHeight: 17 },
   tabBar: {
     flexDirection: "row",
     gap: spacing.sm,

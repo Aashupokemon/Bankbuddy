@@ -24,6 +24,60 @@ export interface AuditQuery {
   cursor?: string | null;
 }
 
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  // Commas, quotes and newlines are what make a CSV unreadable in a spreadsheet, so quote those.
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+const AUDIT_CSV_COLUMNS = [
+  "occurred_at",
+  "action",
+  "entity_type",
+  "entity_id",
+  "actor",
+  "reason",
+  "prev_hash",
+  "hash",
+] as const;
+
+/**
+ * The branch trail as CSV, paged through the same filtered query the app uses so an export always
+ * matches what was on screen. Capped well above a branch's daily volume rather than unbounded.
+ */
+export async function exportAuditCsv(db: Queryable, identity: Identity, query: AuditQuery = {}): Promise<string> {
+  assertPermission(identity, "audit.read");
+
+  const rows: AuditEventDto[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await listAuditEvents(db, identity, { ...query, limit: 200, cursor });
+    rows.push(...page.items);
+    cursor = page.nextCursor;
+  } while (cursor && rows.length < 2000);
+
+  const lines = [AUDIT_CSV_COLUMNS.join(",")];
+  for (const row of rows) {
+    lines.push(
+      [
+        row.occurredAt,
+        row.action,
+        row.entityType,
+        row.entityId,
+        row.actorName ?? "",
+        row.reason ?? "",
+        row.prevHash ?? "",
+        row.hash,
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  }
+  // CRLF: what Excel expects, and harmless everywhere else.
+  return `${lines.join("\r\n")}\r\n`;
+}
+
 export async function listAuditEvents(
   db: Queryable,
   identity: Identity,

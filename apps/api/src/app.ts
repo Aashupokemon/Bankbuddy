@@ -1,16 +1,20 @@
 import express, { type Request, type Response } from "express";
 
 import {
+  bulkReassignSchema,
   categorySchema,
   createCommentSchema,
   createDependencySchema,
   createTaskSchema,
+  createTemplateSchema,
   proposeHandoverSchema,
   respondHandoverSchema,
+  runTemplatesSchema,
   taskStatuses,
   transitionTaskSchema,
   updateSettingsSchema,
   updateTaskSchema,
+  updateTemplateSchema,
   type TaskStatus,
 } from "@bankbuddy/contracts";
 import type { Database, Queryable } from "@bankbuddy/db";
@@ -53,6 +57,7 @@ import {
 import { ApiError, errorHandler, ifMatchVersion, parseBody, route } from "./http.ts";
 import { runSync } from "./sync.ts";
 import {
+  bulkReassign,
   createTask,
   dashboard,
   getTaskRow,
@@ -62,6 +67,7 @@ import {
   transitionTask,
   updateTask,
 } from "./tasks.ts";
+import { createTemplate, listTemplates, materialiseTemplates, updateTemplate } from "./templates.ts";
 
 function queryString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -126,8 +132,14 @@ export function createApp(database: Database): express.Express {
     "/api/v1/auth/dev-login",
     route(async (req, res) => {
       const email = queryString((req.body as { email?: unknown })?.email);
+      const branchId = queryString((req.body as { branchId?: unknown })?.branchId);
       if (!email) throw ApiError.validation("Email is required", [{ path: "email", message: "Required" }]);
-      const result = await devLogin(database, email);
+      if (branchId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(branchId)) {
+        throw ApiError.validation("branchId must be a UUID", [
+          { path: "branchId", message: "Must be the branchId from /auth/users" },
+        ]);
+      }
+      const result = await devLogin(database, email, branchId);
       const settings = await scoped(
         { ...req, identity: result.identity } as Request,
         async (tx, identity) => getSettings(tx, identity),
@@ -221,6 +233,14 @@ export function createApp(database: Database): express.Express {
     }),
   );
 
+  app.post(
+    "/api/v1/tasks/bulk-reassign",
+    route(async (req, res) => {
+      const input = parseBody(bulkReassignSchema, req.body);
+      body(req, res, await scoped(req, (tx, identity) => bulkReassign(tx, identity, input)));
+    }),
+  );
+
   app.get(
     "/api/v1/tasks/:id",
     route(async (req, res) => {
@@ -308,6 +328,41 @@ export function createApp(database: Database): express.Express {
         removeDependency(tx, identity, String(req.params.id), String(req.params.dependencyId)),
       );
       res.status(204).end();
+    }),
+  );
+
+  /* ---------------------------------------------------------------- recurring chores */
+
+  app.get(
+    "/api/v1/templates",
+    route(async (req, res) => {
+      body(req, res, { items: await scoped(req, (tx, identity) => listTemplates(tx, identity)) });
+    }),
+  );
+
+  app.post(
+    "/api/v1/templates",
+    route(async (req, res) => {
+      const input = parseBody(createTemplateSchema, req.body);
+      const created = await scoped(req, (tx, identity) => createTemplate(tx, identity, input));
+      res.status(201).json(created);
+    }),
+  );
+
+  app.patch(
+    "/api/v1/templates/:id",
+    route(async (req, res) => {
+      const input = parseBody(updateTemplateSchema, req.body);
+      body(req, res, await scoped(req, (tx, identity) => updateTemplate(tx, identity, String(req.params.id), input)));
+    }),
+  );
+
+  // "Create today's chores". Safe to call repeatedly: the database dedupes by (template, date).
+  app.post(
+    "/api/v1/templates/run",
+    route(async (req, res) => {
+      const input = parseBody(runTemplatesSchema, req.body ?? {});
+      body(req, res, await scoped(req, (tx, identity) => materialiseTemplates(tx, identity, input)));
     }),
   );
 
@@ -401,6 +456,25 @@ export function createApp(database: Database): express.Express {
         return verifyAuditChain(tx, identity.branchId);
       });
       body(req, res, result);
+    }),
+  );
+
+  app.get(
+    "/api/v1/audit/export.csv",
+    route(async (req, res) => {
+      const csv = await scoped(req, async (tx, identity) => {
+        const { exportAuditCsv } = await import("./admin.ts");
+        return exportAuditCsv(tx, identity, {
+          ...(queryString(req.query.action) ? { action: queryString(req.query.action)! } : {}),
+          ...(queryString(req.query.entityType) ? { entityType: queryString(req.query.entityType)! } : {}),
+          ...(queryString(req.query.entityId) ? { entityId: queryString(req.query.entityId)! } : {}),
+          ...(queryString(req.query.actorId) ? { actorId: queryString(req.query.actorId)! } : {}),
+        });
+      });
+      // A download for the manager's own device, not a cached page.
+      res.setHeader("content-type", "text/csv; charset=utf-8");
+      res.setHeader("content-disposition", 'attachment; filename="bankbuddy-audit.csv"');
+      res.status(200).send(csv);
     }),
   );
 

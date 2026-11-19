@@ -8,10 +8,10 @@ no web application.
 | Screen | Purpose |
 | --- | --- |
 | Sign in | Development sign-in listing the synthetic pilot users. No passwords, no real accounts. |
-| Board | Dashboard counts (overdue, due today, blocked, in progress, mine, unassigned), filters, task list. |
+| Board | Dashboard counts (overdue, due today, blocked, in progress, mine, unassigned), free-text search, filters (the last one used is remembered), task list. |
 | Capture | Free-text capture → editable extraction draft → explicit confirm; plus a plain form. |
 | Task | Status transitions (with required reasons), reassignment, handover, dependencies, comments, history. |
-| More | Offline queue, notifications, handovers to accept, analytics, audit trail with chain verification, sign out. |
+| More | Offline queue, changes that did not merge, notifications, handovers to accept, analytics, audit trail with chain verification and CSV export, sign out. |
 
 Accessibility: every interactive element has a role and label, touch targets are at least 44pt, and
 the layout is single-column for small screens. No accessibility audit has been run yet.
@@ -50,10 +50,14 @@ environment.
 
 ## Building an installable APK
 
-A release APK has been built from this tree: `artifacts/bankbuddy-1.0.0-release.apk` (59 MB, 715 entries,
-Hermes bundle at `assets/index.android.bundle`). It is signed with the generated debug keystore, so it
-installs on a device for review but is not a Play-ready artifact. The file is gitignored; rebuild it with
-the steps below.
+A release APK has been built from this tree: `artifacts/bankbuddy-0.1.0-release.apk` (60 MB, Hermes
+bundle at `assets/index.android.bundle`). It is signed with the generated debug keystore, so it installs
+on a device for review but is not a Play-ready artifact. The file is gitignored; rebuild it with the
+steps below.
+
+This build has been installed on an Android emulator against a live `npm run api`: the pilot-user list
+loads, sign-in works, and the Board, task detail and More tabs render real API data. That check is
+manual — there is no emulator in CI, so a bundle-only CI run still proves nothing about rendering.
 
 Prerequisites: JDK 17 (Gradle 8.10.2 does not run on JDK 21+), the Android SDK with platform 35 and
 build-tools 35.0.0, and Bash. `JAVA_HOME` and `ANDROID_HOME` are used when set; otherwise the script looks
@@ -81,6 +85,12 @@ npm run mobile:apk -- clean # extra arguments go to Gradle
 4. `expo prebuild` rewrites `apps/mobile/package.json` with extra scripts; the script restores it, so the
    checkout is left untouched.
 
+A fifth thing the script cannot fix from Gradle: the release manifest has no `android:usesCleartextTraffic`
+(Expo's template sets it only for debug builds), so a release APK pointed at the plain-HTTP pilot API
+fails every request with "Cannot reach the server" while the server is in fact up. `apps/mobile/app.json`
+registers `plugins/withCleartextTraffic.js`, which turns the opt-in on during prebuild. Remove that plugin
+once the API is served over HTTPS.
+
 To do it by hand instead, run `npx expo prebuild --platform android --no-install` in `apps/mobile`, apply
 the `android.kotlinVersion` pin above, then `EXPO_NO_METRO_WORKSPACE_ROOT=1 ./gradlew assembleRelease` in
 `apps/mobile/android` — from a short path on Windows.
@@ -96,6 +106,27 @@ The APK ships the JS bundle but no backend. It is preconfigured for `http://10.0
 API from `npm run api` as seen from an Android emulator; on a physical device set `EXPO_PUBLIC_API_URL`
 to the machine's LAN address and rebuild, or point the app at a deployed API.
 
+Because that API is HTTP, the release build opts into cleartext traffic (see the prebuild note above).
+The APK therefore trusts plain HTTP from any host, which is acceptable only for this synthetic pilot; an
+HTTPS API would let you drop the plugin and the opt-in with it.
+
+## Running without the API (demo mode)
+
+`10.0.2.2` only exists inside an Android emulator, so on a real phone every request fails. Rather than
+show an error screen, the app falls back to bundled synthetic data (`apps/mobile/src/demo.ts`): the
+sign-in list, board, task detail, reminders, analytics and audit trail all render from memory, and
+status changes, comments and new tasks are applied in memory for the session.
+
+The fallback only triggers on a transport failure. An HTTP error from a reachable server is still shown
+as an error, so demo data cannot mask a broken backend. The mode is announced in three places: the
+sign-in row reads `MG Road Branch (demo)`, the More tab reads `demo data on this device`, and a banner
+sits above every screen for as long as demo data is in use — tapping it drops the mode and retries the
+API. Nothing is persisted; a relaunch starts from the seed again.
+
+To skip the network attempt entirely — useful for screenshots — build with `EXPO_PUBLIC_DEMO_MODE=1`.
+To use a real server from a physical device instead, set `EXPO_PUBLIC_API_URL` to the machine's LAN
+address and make sure the API listens on that interface.
+
 ## Offline behaviour
 
 Writes that fail with a network error are written to AsyncStorage with a client-generated id and
@@ -105,14 +136,38 @@ pending count with a manual **Sync now** button.
 
 The API applies each operation at most once, keyed by that id. An operation is removed from the queue
 only after the server has answered for it, so a dropped response means it is retried and answered
-`replayed` rather than applied twice. Version mismatches come back as `conflict` — reported, not
-merged — and the entry is then dropped so it cannot loop forever.
+`replayed` rather than applied twice. Version mismatches come back as `conflict`: the entry leaves the
+retry queue but is kept under `bankbuddy.offline-conflicts.v1`, listed in the More tab as **Changes
+that did not merge** until someone redoes the edit and dismisses it. Dropping it silently would lose
+one of two people's edits, which is exactly the case a branch board has to get right.
 
 ## Configuration
 
 | Variable | Meaning |
 | --- | --- |
 | `EXPO_PUBLIC_API_URL` | API base URL. Default `http://10.0.2.2:8787`. |
+| `EXPO_PUBLIC_DEMO_MODE` | `1` skips the network and always uses bundled demo data. |
+
+## Release signing
+
+A release APK built without a key is signed with Expo's bundled debug keystore. It installs, but each
+new build has a different identity problem for anyone holding the old one, and there is no key to keep.
+
+```bash
+npm run mobile:keystore                  # creates apps/mobile/keystore/ (gitignored)
+source apps/mobile/keystore/keystore.env
+npm run mobile:apk                       # now signed with that key
+```
+
+[`scripts/create-keystore.sh`](../scripts/create-keystore.sh) refuses to overwrite an existing key, and
+writes the passwords to `keystore.env` with `chmod 600` rather than to the repository.
+[`scripts/android-signing.sh`](../scripts/android-signing.sh) runs after `expo prebuild` during the APK
+build: it writes `android/app/release-signing.gradle` and applies it, reading the key from the
+`BANKBUDDY_KEYSTORE*` environment variables. With none set it does nothing, so a local demo build still
+works without secrets. The key is the app's identity to Android — back it up; losing it means installed
+builds can only be uninstalled, not updated.
+
+Device-level tests of these flows live in [`docs/TESTING.md`](TESTING.md).
 
 The offline queue lives under the `bankbuddy.offline-queue.v1` AsyncStorage key and is verified by
 `apps/mobile/test/offlineQueue.test.ts`, which simulates a relaunch by opening a second queue over

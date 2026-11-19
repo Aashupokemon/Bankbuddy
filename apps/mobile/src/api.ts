@@ -1,19 +1,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
-import { createOfflineQueue, type FlushOutcome } from "./offlineQueue";
+import type { SyncOperation } from "@bankbuddy/contracts";
 
-import type {
-  DashboardResponse,
-  ExtractResponse,
-  MeResponse,
-  NotificationDto,
-  SyncOperation,
-  SyncResult,
-  TaskDto,
-  TaskListResponse,
-  TaskStatus,
-} from "@bankbuddy/contracts";
+import { demoRequest } from "./demo";
+import { createApiClient } from "./http";
+import { createOfflineQueue, type FlushOutcome, type QueueConflict } from "./offlineQueue";
 
 /**
  * The API base URL. `10.0.2.2` is how the Android emulator reaches the host machine; on a physical
@@ -22,6 +14,9 @@ import type {
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://10.0.2.2:8787";
 
 const TOKEN_KEY = "bankbuddy.session";
+
+/** Set EXPO_PUBLIC_DEMO_MODE=1 to skip the network entirely (useful for screenshots and demos). */
+const DEMO_ONLY = process.env.EXPO_PUBLIC_DEMO_MODE === "1";
 
 let tokenCache: string | null = null;
 
@@ -53,185 +48,38 @@ export async function clearToken(): Promise<void> {
   }
 }
 
-export class ApiFailure extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    readonly payload: unknown = null,
-  ) {
-    super(message);
-  }
+// The request pipeline itself lives in ./http so it stays testable without React Native; the demo
+// fallback and the device token store are wired in here.
+const client = createApiClient({
+  baseUrl: API_URL,
+  demo: demoRequest,
+  getToken: loadToken,
+  demoOnly: DEMO_ONLY,
+});
+
+export { ApiFailure, type DevUser } from "./http";
+
+/**
+ * True once a request could not reach the API and the bundled demo data took over. The screens use
+ * this to label the session so on-device synthetic data is never mistaken for a live branch board.
+ */
+export function isDemoMode(): boolean {
+  return client.isDemoMode();
 }
 
-async function request<T>(
-  path: string,
-  options: { method?: string; body?: unknown; token?: string | null } = {},
-): Promise<T> {
-  const token = options.token === undefined ? await loadToken() : options.token;
-  let response: Response;
-  try {
-    response = await fetch(`${API_URL}${path}`, {
-      method: options.method ?? "GET",
-      headers: {
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-    });
-  } catch (error) {
-    throw new ApiFailure(0, "network_unavailable", "Cannot reach the server. Check the connection.", error);
-  }
-
-  const text = await response.text();
-  const payload = text ? (JSON.parse(text) as unknown) : null;
-
-  if (!response.ok) {
-    const problem = payload as { title?: string; code?: string } | null;
-    throw new ApiFailure(
-      response.status,
-      problem?.code ?? "error",
-      problem?.title ?? `Request failed (${response.status})`,
-      payload,
-    );
-  }
-  return payload as T;
+/** Lets the shell show a banner while bundled demo data is standing in for the branch API. */
+export function subscribeDemoMode(listener: (active: boolean) => void): () => void {
+  return client.subscribeDemoMode(listener);
 }
 
-export interface DevUser {
-  email: string;
-  name: string;
-  role: string;
-  branch: string;
+/** Drops demo mode so the next request tries the API again (used by "Retry live data"). */
+export function resetDemoMode(): void {
+  client.resetDemoMode();
 }
 
-export const api = {
-  devUsers: () => request<{ users: DevUser[] }>("/api/v1/auth/users", { token: null }),
+export const api = client.api;
 
-  login: (email: string) =>
-    request<{ token: string; me: MeResponse }>("/api/v1/auth/dev-login", {
-      method: "POST",
-      body: { email },
-      token: null,
-    }),
-
-  logout: () => request<void>("/api/v1/auth/logout", { method: "POST" }),
-
-  me: () => request<MeResponse>("/api/v1/me"),
-
-  dashboard: () => request<DashboardResponse>("/api/v1/dashboard"),
-
-  members: () => request<{ items: Array<{ id: string; name: string; role: string }> }>("/api/v1/members"),
-
-  tasks: (query: Record<string, string | number | undefined> = {}) => {
-    const search = Object.entries(query)
-      .filter(([, value]) => value !== undefined && value !== "")
-      .map(([key, value]) => `${key}=${encodeURIComponent(String(value))}`)
-      .join("&");
-    return request<TaskListResponse>(`/api/v1/tasks${search ? `?${search}` : ""}`);
-  },
-
-  task: (id: string) => request<TaskDto>(`/api/v1/tasks/${id}`),
-
-  createTask: (body: Record<string, unknown>) =>
-    request<TaskDto>("/api/v1/tasks", { method: "POST", body }),
-
-  updateTask: (id: string, body: Record<string, unknown>) =>
-    request<TaskDto>(`/api/v1/tasks/${id}`, { method: "PATCH", body }),
-
-  transition: (id: string, body: { version: number; status: TaskStatus; reason?: string; blockedReason?: string }) =>
-    request<TaskDto>(`/api/v1/tasks/${id}/status`, { method: "POST", body }),
-
-  comments: (id: string) =>
-    request<{ items: Array<{ id: string; authorName: string; body: string; createdAt: string }> }>(
-      `/api/v1/tasks/${id}/comments`,
-    ),
-
-  addComment: (id: string, body: string) =>
-    request<{ id: string }>(`/api/v1/tasks/${id}/comments`, { method: "POST", body: { body } }),
-
-  activity: (id: string) =>
-    request<{ items: Array<{ id: string; summary: string; actorName: string; createdAt: string; reason: string | null }> }>(
-      `/api/v1/tasks/${id}/activity`,
-    ),
-
-  dependencies: (id: string) =>
-    request<{
-      blocking: Array<{ id: string; dependsOnTaskId: string; dependsOnTitle: string; dependsOnStatus: string }>;
-      blockedBy: Array<{ id: string; dependsOnTaskId: string; dependsOnTitle: string; dependsOnStatus: string }>;
-    }>(`/api/v1/tasks/${id}/dependencies`),
-
-  addDependency: (id: string, dependsOnTaskId: string) =>
-    request<{ ok: boolean }>(`/api/v1/tasks/${id}/dependencies`, { method: "POST", body: { dependsOnTaskId } }),
-
-  extract: (text: string) =>
-    request<ExtractResponse>("/api/v1/assistant/extract", { method: "POST", body: { text } }),
-
-  notifications: () => request<{ items: NotificationDto[] }>("/api/v1/notifications"),
-
-  acknowledge: (id: string) => request<void>(`/api/v1/notifications/${id}/ack`, { method: "POST" }),
-
-  acknowledgeAll: () => request<{ acknowledged: number }>("/api/v1/notifications/read-all", { method: "POST" }),
-
-  audit: (query: Record<string, string | undefined> = {}) => {
-    const search = Object.entries(query)
-      .filter(([, value]) => Boolean(value))
-      .map(([key, value]) => `${key}=${encodeURIComponent(String(value))}`)
-      .join("&");
-    return request<{
-      items: Array<{
-        id: string;
-        action: string;
-        entityType: string;
-        actorName: string | null;
-        occurredAt: string;
-        reason: string | null;
-        hash: string;
-      }>;
-    }>(`/api/v1/audit/events${search ? `?${search}` : ""}`);
-  },
-
-  auditVerify: () =>
-    request<{ checked: number; brokenLinks: number; tampered: number; valid: boolean }>("/api/v1/audit/verify"),
-
-  analytics: () =>
-    request<{
-      windowDays: number;
-      created: number;
-      completed: number;
-      reopened: number;
-      medianCompletionHours: number | null;
-      onTimeRate: number | null;
-      blockedNow: number;
-      byCategory: Array<{ categoryKey: string | null; count: number }>;
-    }>("/api/v1/analytics/summary"),
-
-  handovers: () =>
-    request<{
-      items: Array<{
-        id: string;
-        fromName: string;
-        toName: string;
-        status: string;
-        note: string | null;
-        tasks: Array<{ id: string; title: string }>;
-      }>;
-    }>("/api/v1/handovers"),
-
-  proposeHandover: (taskId: string, toUserId: string) =>
-    request<{ id: string }>("/api/v1/handovers", {
-      method: "POST",
-      body: { toUserId, taskIds: [taskId] },
-    }),
-
-  respondHandover: (id: string, decision: "accept" | "decline") =>
-    request<{ id: string }>(`/api/v1/handovers/${id}/respond`, { method: "POST", body: { decision } }),
-
-  sync: (operations: SyncOperation[]) =>
-    request<{ results: SyncResult[] }>("/api/v1/sync/operations", { method: "POST", body: { operations } }),
-};
-
-/* -------------------------------------------------------------------------------------------- *
+/* -------------------------------------------------------------------------------------------- *\
  * Offline queue: writes attempted without a connection are persisted to device storage and replayed
  * with their own id, which the API uses for idempotency. The queue therefore survives a restart and
  * each operation is still applied at most once.
@@ -259,4 +107,13 @@ export function flushQueue(): Promise<FlushOutcome> {
     const response = await api.sync(batch);
     return response.results;
   });
+}
+
+/** Changes the server refused to merge, kept so a person can review and dismiss them. */
+export function listConflicts(): Promise<QueueConflict[]> {
+  return offlineQueue.listConflicts();
+}
+
+export function dismissConflict(operationId: string): Promise<void> {
+  return offlineQueue.dismissConflict(operationId);
 }

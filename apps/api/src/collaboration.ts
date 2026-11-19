@@ -223,6 +223,7 @@ export interface HandoverDto {
   toUserId: string;
   toName: string;
   note: string | null;
+  scope: "tasks" | "shift";
   status: "proposed" | "accepted" | "declined" | "cancelled";
   createdAt: string;
   respondedAt: string | null;
@@ -237,12 +238,13 @@ export async function listHandovers(db: Queryable, identity: Identity): Promise<
     to_user_id: string;
     to_name: string;
     note: string | null;
+    scope: "tasks" | "shift";
     status: HandoverDto["status"];
     created_at: Date | string;
     responded_at: Date | string | null;
   }>(
     `select h.id, h.from_user_id, f.name as from_name, h.to_user_id, t.name as to_name,
-            h.note, h.status, h.created_at, h.responded_at
+            h.note, h.scope, h.status, h.created_at, h.responded_at
        from handovers h
        join users f on f.id = h.from_user_id
        join users t on t.id = h.to_user_id
@@ -265,6 +267,7 @@ export async function listHandovers(db: Queryable, identity: Identity): Promise<
       toUserId: row.to_user_id,
       toName: row.to_name,
       note: row.note,
+      scope: row.scope,
       status: row.status,
       createdAt: new Date(row.created_at).toISOString(),
       respondedAt: row.responded_at ? new Date(row.responded_at).toISOString() : null,
@@ -288,22 +291,45 @@ export async function proposeHandover(
   ]);
   if (target.rowCount === 0) throw ApiError.validation("That person is not in this branch", [{ path: "toUserId", message: "Unknown member" }]);
 
+  const scope = input.scope ?? "tasks";
+  // A whole-shift handover is resolved here, from the database, so the device cannot widen or narrow
+  // the set of tasks it covers.
+  const taskIds =
+    scope === "shift"
+      ? (
+          await db.query<{ id: string }>(
+            `select id from tasks
+              where branch_id = $1 and owner_id = $2 and deleted_at is null
+                and status in ('open','in_progress','blocked')
+              order by due_at asc nulls last`,
+            [identity.branchId, identity.userId],
+          )
+        ).rows.map((row) => row.id)
+      : (input.taskIds ?? []);
+
+  if (taskIds.length === 0) {
+    throw ApiError.validation(
+      scope === "shift" ? "You have no open work to hand over" : "Pick at least one task",
+      [{ path: scope === "shift" ? "scope" : "taskIds", message: "Nothing to hand over" }],
+    );
+  }
+
   const tasks = await db.query<{ id: string; owner_id: string | null }>(
     "select id, owner_id from tasks where branch_id = $1 and id = any($2::uuid[]) and deleted_at is null",
-    [identity.branchId, input.taskIds],
+    [identity.branchId, taskIds],
   );
-  if (tasks.rowCount !== input.taskIds.length) throw ApiError.notFound("Task");
+  if (tasks.rowCount !== taskIds.length) throw ApiError.notFound("Task");
   if (!can(identity.role, "task.assign") && tasks.rows.some((t) => t.owner_id !== identity.userId)) {
     throw ApiError.forbidden("cannot_hand_over", "You can only hand over work you own");
   }
 
   const inserted = await db.query<{ id: string }>(
-    `insert into handovers (branch_id, from_user_id, to_user_id, note) values ($1,$2,$3,$4) returning id`,
-    [identity.branchId, identity.userId, input.toUserId, input.note ?? null],
+    `insert into handovers (branch_id, from_user_id, to_user_id, note, scope) values ($1,$2,$3,$4,$5) returning id`,
+    [identity.branchId, identity.userId, input.toUserId, input.note ?? null, scope],
   );
   const handoverId = inserted.rows[0]!.id;
 
-  for (const taskId of input.taskIds) {
+  for (const taskId of taskIds) {
     await db.query("insert into handover_tasks (handover_id, task_id) values ($1, $2) on conflict do nothing", [
       handoverId,
       taskId,
@@ -313,7 +339,14 @@ export async function proposeHandover(
   await db.query(
     `insert into notifications (branch_id, user_id, kind, title, body, dedupe_key)
      values ($1,$2,'handover','Shift handover to review',$3,$4)`,
-    [identity.branchId, input.toUserId, `${identity.name} handed over ${input.taskIds.length} task(s)`, `handover:${handoverId}`],
+    [
+      identity.branchId,
+      input.toUserId,
+      scope === "shift"
+        ? `${identity.name} handed over the whole shift (${taskIds.length} task(s))`
+        : `${identity.name} handed over ${taskIds.length} task(s)`,
+      `handover:${handoverId}`,
+    ],
   );
 
   await writeAudit(db, {
@@ -322,7 +355,7 @@ export async function proposeHandover(
     action: "handover.propose",
     entityType: "handover",
     entityId: handoverId,
-    after: { toUserId: input.toUserId, taskIds: input.taskIds },
+    after: { toUserId: input.toUserId, scope, taskIds },
   });
 
   const list = await listHandovers(db, identity);

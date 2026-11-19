@@ -201,6 +201,8 @@ main() {
 
   prebuild_android "$project_dir"
   pin_kotlin_version "$project_dir"
+  # Signs with a real key when one is configured, otherwise keeps the template's debug signing.
+  bash "$REPO_ROOT/scripts/android-signing.sh" "$project_dir"
 
   log "Compiling the release APK"
   (

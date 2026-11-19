@@ -1,0 +1,74 @@
+# End-to-end smoke journey on a device, using the bundled demo data.
+#
+# Run with the API stopped (or the APK built with EXPO_PUBLIC_DEMO_MODE=1): the app falls back to
+# its on-device data, which makes the flow deterministic and needs no backend.
+#
+#   npm run mobile:e2e
+#
+# Selectors use accessibility labels and testIDs the app already exposes, so a renamed button should
+# fail the flow rather than silently pass.
+appId: com.bankbuddy.app
+name: Demo smoke — sign in, board, search, task, status change, More, sign out
+---
+- launchApp:
+    clearState: true
+
+# Sign-in list renders from demo data, and the row states which branch it lands in.
+- assertVisible: "Branch task workspace · pilot build"
+- tapOn: "Sign in as Priya Menon.*"
+
+# Demo data must be announced, not silently presented as a live branch board.
+- assertVisible:
+    id: "demo-banner"
+- assertVisible: "MG Road Branch"
+- assertVisible: "Due today"
+
+# Search narrows the board (one request per pause in typing).
+- tapOn:
+    id: "board-search"
+- inputText: "audit"
+# The soft keyboard covers the results and eats the first tap after typing, so dismiss it explicitly.
+- hideKeyboard
+- assertVisible: ".*audit observation.*"
+
+# Open the task and move it forward; the demo dataset allows open -> in progress.
+- tapOn: ".*Overdue: respond to the audit observation.*"
+- assertVisible: "Move it on"
+- tapOn: "In progress"
+- tapOn: "Move to In progress"
+- assertVisible: "In progress"
+- assertVisible: "v2"
+
+# Back, then the More tab carries the demo label, analytics and the audit tools.
+- tapOn: "← Back to the board"
+- tapOn: "More"
+- assertVisible: ".*demo data on this device.*"
+- assertVisible: "Offline queue"
+
+# Signing out must return to the pilot user list. The button is at the bottom of a long page, so the
+# flow scrolls to it instead of assuming it is on the first screen.
+# Sign out sits below the audit section. scrollUntilVisible stops as soon as the (clipped) node is in
+# the tree, which left the button off-screen and swallowed the tap, so swipe to the end instead.
+# A slow explicit drag, not `direction: UP` and not a short fling: this ScrollView clamps a fast
+# gesture and the shorthand swipe never moves it.
+- swipe:
+    start: 50%, 76%
+    end: 50%, 26%
+    duration: 1500
+- swipe:
+    start: 50%, 76%
+    end: 50%, 26%
+    duration: 1500
+- swipe:
+    start: 50%, 76%
+    end: 50%, 26%
+    duration: 1500
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn:
+    text: "Sign out"
+    retryTapIfNoChange: true
+# Signing out rebuilds the sign-in screen from scratch, so allow it more than a frame.
+- extendedWaitUntil:
+    visible: "Branch task workspace.*"
+    timeout: 10000

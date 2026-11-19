@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import type { DashboardResponse, MeResponse, TaskDto } from "@bankbuddy/contracts";
 
@@ -8,6 +10,8 @@ import { colors, priorityColor, radius, spacing, statusColor } from "../theme";
 import { Badge, Card, Chip, Empty } from "../ui";
 
 type Filter = "all" | "mine" | "due_today" | "overdue" | "blocked";
+
+const FILTER_KEY = "bankbuddy.board-filter.v1";
 
 const FILTERS: Array<{ key: Filter; label: string }> = [
   { key: "all", label: "All" },
@@ -70,6 +74,8 @@ export default function BoardScreen({
   refreshKey: number;
 }): React.JSX.Element {
   const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [tasks, setTasks] = useState<TaskDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -84,6 +90,7 @@ export default function BoardScreen({
         api.tasks({
           ...(filter === "mine" ? { scope: "mine" } : {}),
           ...(filter === "all" ? {} : { filter }),
+          ...(query ? { q: query } : {}),
           limit: 50,
         }),
       ]);
@@ -95,7 +102,27 @@ export default function BoardScreen({
       setLoading(false);
       setRefreshing(false);
     }
-  }, [filter]);
+  }, [filter, query]);
+
+  // One request per pause in typing, not one per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // The filter someone last chose is remembered on the device, so a reopened board is where they left it.
+  useEffect(() => {
+    void AsyncStorage.getItem(FILTER_KEY)
+      .then((stored) => {
+        if (stored && FILTERS.some((item) => item.key === stored)) setFilter(stored as Filter);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const chooseFilter = (next: Filter): void => {
+    setFilter(next);
+    void AsyncStorage.setItem(FILTER_KEY, next).catch(() => undefined);
+  };
 
   useEffect(() => {
     void load();
@@ -143,22 +170,45 @@ export default function BoardScreen({
             ))}
           </View>
 
+          <TextInput
+            testID="board-search"
+            accessibilityLabel="Search tasks"
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search title or details"
+            placeholderTextColor={colors.muted}
+            returnKeyType="search"
+            style={styles.search}
+          />
+
           <View style={styles.filterRow}>
             {FILTERS.map((item) => (
               <Chip
                 key={item.key}
                 label={item.label}
                 active={filter === item.key}
-                onPress={() => setFilter(item.key)}
+                onPress={() => chooseFilter(item.key)}
               />
             ))}
           </View>
+
+          {query && !loading ? (
+            <Text style={styles.metaText}>
+              {tasks.length} matching “{query}”
+            </Text>
+          ) : null}
 
           {error ? <Text style={{ color: colors.danger, fontSize: 13 }}>{error}</Text> : null}
           {loading ? <ActivityIndicator color={colors.mint} /> : null}
         </View>
       }
-      ListEmptyComponent={loading ? null : <Empty>Nothing here. Capture something from the “Capture” tab.</Empty>}
+      ListEmptyComponent={
+        loading ? null : (
+          <Empty>
+            {query ? `Nothing matches “${query}”.` : "Nothing here. Capture something from the “Capture” tab."}
+          </Empty>
+        )
+      }
       ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
       renderItem={({ item }) => <TaskRow task={item} onPress={() => onOpenTask(item.id)} />}
     />
@@ -180,6 +230,16 @@ const styles = StyleSheet.create({
   countValue: { fontSize: 22, fontWeight: "800" },
   countLabel: { color: colors.muted, fontSize: 11 },
   filterRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  search: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    color: colors.text,
+    paddingHorizontal: spacing.md,
+    minHeight: 44,
+    fontSize: 15,
+  },
   row: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

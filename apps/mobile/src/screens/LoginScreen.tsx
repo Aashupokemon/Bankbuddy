@@ -30,11 +30,11 @@ export default function LoginScreen({
     void load();
   }, [load]);
 
-  const signIn = async (email: string): Promise<void> => {
-    setBusy(email);
+  const signIn = async (user: DevUser): Promise<void> => {
+    setBusy(`${user.email}-${user.branchId}`);
     setError(null);
     try {
-      const response = await api.login(email);
+      const response = await api.login(user.email, user.branchId);
       await saveToken(response.token);
       onSignedIn(response.token, response.me);
     } catch (failure) {
@@ -81,10 +81,10 @@ export default function LoginScreen({
 
       {users.map((user) => (
         <Pressable
-          key={`${user.email}-${user.branch}`}
+          key={`${user.email}-${user.branchId}`}
           accessibilityRole="button"
-          accessibilityLabel={`Sign in as ${user.name}, ${user.role}`}
-          onPress={() => void signIn(user.email)}
+          accessibilityLabel={`Sign in as ${user.name}, ${user.role}, ${user.branch}`}
+          onPress={() => void signIn(user)}
           style={({ pressed }) => [styles.userRow, { opacity: pressed ? 0.75 : 1 }]}
         >
           <View style={{ flex: 1, gap: 2 }}>
@@ -93,7 +93,7 @@ export default function LoginScreen({
               {user.role.replace("_", " ")} · {user.branch}
             </Text>
           </View>
-          {busy === user.email ? (
+          {busy === `${user.email}-${user.branchId}` ? (
             <ActivityIndicator color={colors.mint} />
           ) : (
             <Badge label="Sign in" color={colors.mint} />

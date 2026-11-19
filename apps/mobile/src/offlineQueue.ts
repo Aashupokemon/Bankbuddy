@@ -33,12 +33,21 @@ export interface BatchResult {
   status: "applied" | "replayed" | "conflict" | "rejected";
 }
 
+export interface QueueConflict {
+  operation: QueueOperation;
+  /** When the server rejected the merge, so the review list can show age. */
+  at: string;
+}
+
 export interface OfflineQueue {
   /** Appends an operation and persists it. Returns the new queue length. */
   enqueue(operation: QueueOperation): Promise<number>;
   /** Operations currently waiting, oldest first. */
   list(): Promise<QueueOperation[]>;
   count(): Promise<number>;
+  /** Conflicts are kept for review instead of vanishing with the queue entry. */
+  listConflicts(): Promise<QueueConflict[]>;
+  dismissConflict(operationId: string): Promise<void>;
   /**
    * Sends the head of the queue. The send function must return one result per operation; an
    * operation is only dropped once the server has answered for it.
@@ -48,6 +57,7 @@ export interface OfflineQueue {
 }
 
 export const QUEUE_STORAGE_KEY = "bankbuddy.offline-queue.v1";
+export const CONFLICTS_STORAGE_KEY = "bankbuddy.offline-conflicts.v1";
 export const MAX_BATCH = 20;
 
 function isOperation(value: unknown): value is QueueOperation {
@@ -59,6 +69,12 @@ function isOperation(value: unknown): value is QueueOperation {
     typeof candidate.payload === "object" &&
     candidate.payload !== null
   );
+}
+
+function isConflict(value: unknown): value is QueueConflict {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<QueueConflict>;
+  return isOperation(candidate.operation) && typeof candidate.at === "string";
 }
 
 export function createOfflineQueue(storage: QueueStorage): OfflineQueue {
@@ -94,6 +110,24 @@ export function createOfflineQueue(storage: QueueStorage): OfflineQueue {
     return loading;
   };
 
+  const loadConflicts = async (): Promise<QueueConflict[]> => {
+    try {
+      const raw = await storage.getItem(CONFLICTS_STORAGE_KEY);
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(isConflict) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const persistConflicts = async (conflicts: QueueConflict[]): Promise<void> => {
+    try {
+      await storage.setItem(CONFLICTS_STORAGE_KEY, JSON.stringify(conflicts));
+    } catch {
+      // Best effort, like the queue itself.
+    }
+  };
+
   const persist = async (): Promise<void> => {
     try {
       await storage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(cache ?? []));
@@ -122,6 +156,15 @@ export function createOfflineQueue(storage: QueueStorage): OfflineQueue {
       return (await load()).length;
     },
 
+    listConflicts() {
+      return loadConflicts();
+    },
+
+    async dismissConflict(operationId) {
+      const conflicts = (await loadConflicts()).filter((item) => item.operation.id !== operationId);
+      await persistConflicts(conflicts);
+    },
+
     async flush(send) {
       if (flushing) return { applied: 0, conflicts: 0, rejected: 0, remaining: (await load()).length };
 
@@ -143,6 +186,18 @@ export function createOfflineQueue(storage: QueueStorage): OfflineQueue {
         const remaining = queue.filter((operation) => !settled.has(operation.id));
         cache = remaining;
         await persist();
+
+        // A conflict means two people changed the same task; dropping it would silently lose one
+        // edit, so the operation is kept aside for review and removed only when someone dismisses it.
+        if (conflicts > 0) {
+          const known = await loadConflicts();
+          const at = new Date().toISOString();
+          const added = queue
+            .filter((operation) => settled.get(operation.id) === "conflict")
+            .filter((operation) => !known.some((item) => item.operation.id === operation.id))
+            .map((operation) => ({ operation, at }));
+          if (added.length > 0) await persistConflicts([...known, ...added]);
+        }
 
         return { applied, conflicts, rejected, remaining: remaining.length };
       } finally {

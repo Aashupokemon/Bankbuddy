@@ -36,3 +36,6 @@ apps/mobile/ios/
 
 # Built release APK (regenerate with the steps in docs/MOBILE.md)
 artifacts/*.apk
+
+# Release signing key and its passwords (scripts/create-keystore.sh)
+apps/mobile/keystore/

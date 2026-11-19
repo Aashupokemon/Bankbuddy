@@ -9,6 +9,8 @@ import {
   priorityRank,
   reasonRequiredFor,
   transitionNeedsManager,
+  type BulkReassignInput,
+  type BulkReassignResponse,
   type CreateTaskInput,
   type DashboardResponse,
   type TaskDto,
@@ -239,12 +241,17 @@ async function notify(
   input: { userId: string; taskId: string; kind: string; title: string; body: string; dedupeKey?: string },
 ): Promise<void> {
   if (input.userId === identity.userId) return;
-  await db.query(
-    `insert into notifications (branch_id, user_id, task_id, kind, title, body, dedupe_key)
-     values ($1, $2, $3, $4, $5, $6, $7)
-     on conflict (dedupe_key) do nothing`,
-    [identity.branchId, input.userId, input.taskId, input.kind, input.title, input.body, input.dedupeKey ?? null],
-  );
+  // A function rather than a plain insert: see insert_notification in 005 for why the dedupe probe
+  // needs privileges the request role deliberately does not have.
+  await db.query("select insert_notification($1, $2, $3, $4, $5, $6, $7)", [
+    identity.branchId,
+    input.userId,
+    input.taskId,
+    input.kind,
+    input.title,
+    input.body,
+    input.dedupeKey ?? null,
+  ]);
 }
 
 export async function createTask(
@@ -629,6 +636,83 @@ async function materialiseNextOccurrence(db: Queryable, identity: Identity, row:
     entityId: nextId,
     after: { recurrenceParentId: row.id, dueAt: nextDue.toISOString() },
   });
+}
+
+/**
+ * Reassigns (or unassigns) a batch of tasks in one call. Every task still keeps its own event and
+ * audit row, so a bulk action stays as traceable as doing them one at a time.
+ */
+export async function bulkReassign(
+  db: Queryable,
+  identity: Identity,
+  input: BulkReassignInput,
+): Promise<BulkReassignResponse> {
+  if (!can(identity.role, "task.assign")) {
+    throw ApiError.forbidden("cannot_bulk_assign", "Only leads and managers can reassign work in bulk");
+  }
+  if (input.ownerId) await assertOwnerInBranch(db, identity, input.ownerId);
+
+  const requested = [...new Set(input.taskIds)];
+  const before = await db.query<{ id: string; title: string; owner_id: string | null; status: TaskStatus }>(
+    `select id, title, owner_id, status from tasks
+      where branch_id = $1 and id = any($2::uuid[]) and deleted_at is null and status <> 'archived'`,
+    [identity.branchId, requested],
+  );
+  if (before.rowCount === 0) throw ApiError.notFound("Task");
+
+  const updated = await db.query<TaskRow>(
+    `update tasks
+        set owner_id = $3, unassigned_explicit = $4, updated_by = $2
+      where branch_id = $1 and id = any($5::uuid[]) and deleted_at is null and status <> 'archived'
+      returning *`,
+    [identity.branchId, identity.userId, input.ownerId, input.ownerId === null, requested],
+  );
+
+  const summary = input.ownerId === null ? "Unassigned in bulk" : "Reassigned in bulk";
+  for (const row of updated.rows) {
+    await db.query(
+      `insert into task_events (branch_id, task_id, actor_id, kind, summary, before, after, reason)
+       values ($1,$2,$3,'reassigned',$4,$5::jsonb,$6::jsonb,$7)`,
+      [
+        identity.branchId,
+        row.id,
+        identity.userId,
+        summary,
+        JSON.stringify({ ownerId: before.rows.find((item) => item.id === row.id)?.owner_id ?? null }),
+        JSON.stringify({ ownerId: row.owner_id }),
+        input.reason ?? null,
+      ],
+    );
+    await writeAudit(db, {
+      branchId: identity.branchId,
+      actorId: identity.userId,
+      action: "task.bulk_assign",
+      entityType: "task",
+      entityId: row.id,
+      before: { ownerId: before.rows.find((item) => item.id === row.id)?.owner_id ?? null },
+      after: { ownerId: row.owner_id, batchSize: updated.rows.length },
+      reason: input.reason ?? null,
+    });
+  }
+
+  // One notification per new owner, not one per task: a shift change is a single interruption.
+  if (input.ownerId && input.ownerId !== identity.userId) {
+    const names = updated.rows.map((row) => row.title);
+    await notify(db, identity, {
+      userId: input.ownerId,
+      taskId: updated.rows[0]!.id,
+      kind: "reassigned",
+      title: `${names.length} task(s) moved to you`,
+      body: names.slice(0, 3).join(", ") + (names.length > 3 ? "…" : ""),
+      dedupeKey: `bulk:${randomUUID()}`,
+    });
+  }
+
+  return {
+    updated: updated.rows.length,
+    skipped: requested.length - updated.rows.length,
+    taskIds: updated.rows.map((row) => row.id),
+  };
 }
 
 export async function softDeleteTask(db: Queryable, identity: Identity, taskId: string): Promise<void> {

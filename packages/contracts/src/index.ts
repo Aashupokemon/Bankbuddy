@@ -258,12 +258,75 @@ export const createDependencySchema = z.object({
 });
 export type CreateDependencyInput = z.infer<typeof createDependencySchema>;
 
-export const proposeHandoverSchema = z.object({
-  toUserId: z.string().uuid(),
-  taskIds: z.array(z.string().uuid()).min(1).max(100),
-  note: z.string().trim().max(500).optional(),
-});
+export const handoverScopes = ["tasks", "shift"] as const;
+export type HandoverScope = (typeof handoverScopes)[number];
+
+/**
+ * Either an explicit list of tasks, or `scope: "shift"` for everything the outgoing person still
+ * owns. The API resolves the shift on the server so the list cannot be tampered with on the device.
+ */
+export const proposeHandoverSchema = z
+  .object({
+    toUserId: z.string().uuid(),
+    taskIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+    scope: z.enum(handoverScopes).optional(),
+    note: z.string().trim().max(500).optional(),
+  })
+  .refine((value) => value.scope === "shift" || (value.taskIds?.length ?? 0) > 0, {
+    message: "Pick at least one task",
+    path: ["taskIds"],
+  });
 export type ProposeHandoverInput = z.infer<typeof proposeHandoverSchema>;
+
+export const bulkReassignSchema = z.object({
+  taskIds: z.array(z.string().uuid()).min(1, "Pick at least one task").max(100),
+  /** `null` leaves the tasks unassigned, for work nobody has picked up yet. */
+  ownerId: z.string().uuid().nullable(),
+  reason: z.string().trim().max(500).optional(),
+});
+export type BulkReassignInput = z.infer<typeof bulkReassignSchema>;
+
+export const templateCadences = ["daily", "weekly"] as const;
+
+const dueTimePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export const createTemplateSchema = z
+  .object({
+    title: z.string().trim().min(3, "Give the chore a title of at least 3 characters").max(200),
+    description: z.string().trim().max(5000).optional(),
+    priority: TaskPriority.default("normal"),
+    categoryKey: z.string().trim().min(1).max(60).optional(),
+    ownerId: z.string().uuid().nullable().optional(),
+    cadence: z.enum(templateCadences),
+    weekday: z.number().int().min(0).max(6).nullable().optional(),
+    dueTime: z.string().regex(dueTimePattern, "Use HH:MM"),
+  })
+  .refine((value) => value.cadence !== "weekly" || typeof value.weekday === "number", {
+    message: "Pick a weekday for a weekly chore",
+    path: ["weekday"],
+  });
+export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
+
+export const updateTemplateSchema = z
+  .object({
+    title: z.string().trim().min(3).max(200).optional(),
+    description: z.string().trim().max(5000).optional(),
+    priority: TaskPriority.optional(),
+    categoryKey: z.string().trim().min(1).max(60).nullable().optional(),
+    ownerId: z.string().uuid().nullable().optional(),
+    cadence: z.enum(templateCadences).optional(),
+    weekday: z.number().int().min(0).max(6).nullable().optional(),
+    dueTime: z.string().regex(dueTimePattern, "Use HH:MM").optional(),
+    active: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: "Nothing to update" });
+export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
+
+export const runTemplatesSchema = z.object({
+  /** Branch-local date (YYYY-MM-DD). Defaults to today in the branch timezone. */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").optional(),
+});
+export type RunTemplatesInput = z.infer<typeof runTemplatesSchema>;
 
 export const respondHandoverSchema = z.object({
   decision: z.enum(["accept", "decline"]),
@@ -416,6 +479,39 @@ export interface AnalyticsSummary {
   onTimeRate: number | null;
   blockedNow: number;
   byCategory: Array<{ categoryKey: string | null; count: number }>;
+}
+
+export interface TaskTemplateDto {
+  id: string;
+  title: string;
+  description: string;
+  priority: TaskPriority;
+  categoryKey: string | null;
+  ownerId: string | null;
+  ownerName: string | null;
+  cadence: (typeof templateCadences)[number];
+  weekday: number | null;
+  dueTime: string;
+  active: boolean;
+  lastRunOn: string | null;
+  createdAt: string;
+}
+
+export interface TemplateListResponse {
+  items: TaskTemplateDto[];
+}
+
+export interface RunTemplatesResponse {
+  date: string;
+  created: number;
+  skipped: number;
+  items: TaskDto[];
+}
+
+export interface BulkReassignResponse {
+  updated: number;
+  skipped: number;
+  taskIds: string[];
 }
 
 export interface NotificationDto {

@@ -143,8 +143,18 @@ export function meResponse(identity: Identity, settings: {
   };
 }
 
-/** Development sign-in: no password, synthetic users only, never enabled in production. */
-export async function devLogin(database: Database, email: string): Promise<{ token: string; identity: Identity }> {
+/**
+ * Development sign-in: no password, synthetic users only, never enabled in production.
+ *
+ * A user can belong to more than one branch (the workspace admin does), so the branch is part of the
+ * sign-in choice: `/auth/users` lists one row per membership and the client sends that `branchId` back.
+ * Without it, the first membership is used, which would silently sign in to the wrong branch.
+ */
+export async function devLogin(
+  database: Database,
+  email: string,
+  branchId?: string | null,
+): Promise<{ token: string; identity: Identity }> {
   if (process.env.NODE_ENV === "production") {
     throw new ApiError(404, "not_found", "Not available");
   }
@@ -154,9 +164,10 @@ export async function devLogin(database: Database, email: string): Promise<{ tok
        from users u
        join memberships m on m.user_id = u.id
       where lower(u.email) = lower($1)
+        and ($2::uuid is null or m.branch_id = $2::uuid)
       order by m.created_at
       limit 1`,
-    [email],
+    [email, branchId ?? null],
   );
   const user = rows.rows[0];
   if (!user) throw ApiError.notFound("User");
@@ -171,15 +182,29 @@ export async function devLogin(database: Database, email: string): Promise<{ tok
   return { token, identity };
 }
 
-export async function listDevUsers(database: Database): Promise<Array<{ email: string; name: string; role: string; branch: string }>> {
-  const rows = await database.query<{ email: string; name: string; role: string; branch: string }>(
-    `select u.email, u.name, m.role, b.name as branch
+export async function listDevUsers(
+  database: Database,
+): Promise<Array<{ email: string; name: string; role: string; branch: string; branchId: string }>> {
+  const rows = await database.query<{
+    email: string;
+    name: string;
+    role: string;
+    branch: string;
+    branch_id: string;
+  }>(
+    `select u.email, u.name, m.role, b.name as branch, m.branch_id
        from users u
        join memberships m on m.user_id = u.id
        join branches b on b.id = m.branch_id
       order by b.name, m.role, u.name`,
   );
-  return rows.rows;
+  return rows.rows.map((row) => ({
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    branch: row.branch,
+    branchId: row.branch_id,
+  }));
 }
 
 export function touchSession(database: Database, token: string): void {

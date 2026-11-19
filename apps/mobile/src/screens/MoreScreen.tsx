@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, Share, StyleSheet, Text, View } from "react-native";
 
 import { can, type MeResponse, type NotificationDto } from "@bankbuddy/contracts";
 
-import { api, flushQueue, subscribeQueue } from "../api";
+import { api, dismissConflict, flushQueue, isDemoMode, listConflicts, subscribeQueue } from "../api";
 import { colors, spacing } from "../theme";
 import { Badge, Button, Card, Empty, Heading } from "../ui";
 
@@ -12,6 +12,7 @@ interface Handover {
   fromName: string;
   toName: string;
   status: string;
+  scope: string;
   note: string | null;
   tasks: Array<{ id: string; title: string }>;
 }
@@ -30,10 +31,14 @@ export default function MoreScreen({
   me,
   onSignOut,
   onOpenTask,
+  onOpenTemplates,
+  onOpenShift,
 }: {
   me: MeResponse;
   onSignOut: () => void;
   onOpenTask: (id: string) => void;
+  onOpenTemplates: () => void;
+  onOpenShift: () => void;
 }): React.JSX.Element {
   const [notifications, setNotifications] = useState<NotificationDto[]>([]);
   const [handovers, setHandovers] = useState<Handover[]>([]);
@@ -48,6 +53,7 @@ export default function MoreScreen({
     onTimeRate: number | null;
   } | null>(null);
   const [queue, setQueue] = useState(0);
+  const [conflicts, setConflicts] = useState<Array<{ id: string; kind: string; at: string; title: string }>>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -59,6 +65,17 @@ export default function MoreScreen({
       const [notificationResponse, handoverResponse] = await Promise.all([api.notifications(), api.handovers()]);
       setNotifications(notificationResponse.items);
       setHandovers(handoverResponse.items);
+      setConflicts(
+        (await listConflicts().catch(() => [])).map((item) => ({
+          id: item.operation.id,
+          kind: item.operation.kind.replace(".", " "),
+          at: item.at,
+          title:
+            typeof item.operation.payload.title === "string"
+              ? item.operation.payload.title
+              : "A change captured offline",
+        })),
+      );
     } catch (failure) {
       setMessage(failure instanceof Error ? failure.message : "Could not load notifications");
     }
@@ -116,6 +133,19 @@ export default function MoreScreen({
     }
   };
 
+  const exportCsv = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const csv = await api.auditCsv();
+      // The share sheet is how a branch manager gets the trail off the phone without a laptop.
+      await Share.share({ title: "BankBuddy audit trail", message: csv });
+    } catch (failure) {
+      setMessage(failure instanceof Error ? failure.message : "Could not export the audit trail");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const respond = async (id: string, decision: "accept" | "decline"): Promise<void> => {
     setBusy(true);
     try {
@@ -143,6 +173,7 @@ export default function MoreScreen({
         <Heading>More</Heading>
         <Text style={styles.subtitle}>
           {me.branch.name} · {me.role.replace("_", " ")}
+          {isDemoMode() ? " · demo data on this device" : ""}
         </Text>
       </View>
 
@@ -160,6 +191,34 @@ export default function MoreScreen({
         <Text style={styles.hint}>Changes captured without a connection are replayed exactly once.</Text>
         <Button label={busy ? "Working…" : "Sync now"} variant="ghost" onPress={() => void sync()} loading={busy} />
       </Card>
+
+      {conflicts.length > 0 ? (
+        <Card style={{ borderColor: colors.danger }}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.sectionTitle}>Changes that did not merge</Text>
+            <Badge label={`${conflicts.length}`} color={colors.danger} />
+          </View>
+          <Text style={styles.hint}>
+            Someone else changed these tasks while this phone was offline. Nothing was overwritten — open the
+            task and make the change again if it still applies, then dismiss the entry.
+          </Text>
+          {conflicts.map((conflict) => (
+            <View key={conflict.id} style={{ gap: 2 }}>
+              <Text style={styles.body}>{conflict.title}</Text>
+              <Text style={styles.hint}>
+                {conflict.kind} · {new Date(conflict.at).toLocaleString()}
+              </Text>
+              <Button
+                label="Dismiss"
+                variant="ghost"
+                onPress={() => {
+                  void dismissConflict(conflict.id).then(() => load());
+                }}
+              />
+            </View>
+          ))}
+        </Card>
+      ) : null}
 
       <Card>
         <Text style={styles.sectionTitle}>Notifications</Text>
@@ -183,12 +242,22 @@ export default function MoreScreen({
       </Card>
 
       <Card>
+        <Text style={styles.sectionTitle}>Shift change</Text>
+        <Text style={styles.hint}>
+          Recurring chores for the branch, and moving a whole shift of work to someone else.
+        </Text>
+        <Button label="Branch chores" variant="ghost" onPress={onOpenTemplates} />
+        <Button label="Handover and bulk reassign" variant="ghost" onPress={onOpenShift} />
+      </Card>
+
+      <Card>
         <Text style={styles.sectionTitle}>Handovers</Text>
         {handovers.length === 0 ? <Empty>No handovers yet.</Empty> : null}
         {handovers.slice(0, 5).map((handover) => (
           <View key={handover.id} style={{ gap: spacing.sm }}>
             <Text style={styles.body}>
               {handover.fromName} → {handover.toName} · {handover.status}
+              {handover.scope === "shift" ? " · whole shift" : ""}
             </Text>
             <Text style={styles.hint}>{handover.tasks.map((task) => task.title).join(", ")}</Text>
             {handover.status === "proposed" && handover.toName === me.user.name ? (
@@ -227,6 +296,7 @@ export default function MoreScreen({
             <Text style={styles.sectionTitle}>Audit trail</Text>
             <Button label="Verify chain" variant="ghost" onPress={() => void verify()} loading={busy} />
           </View>
+          <Button label="Export CSV" variant="ghost" onPress={() => void exportCsv()} loading={busy} />
           {auditCheck ? (
             <Text style={{ color: auditCheck.valid ? colors.mint : colors.danger, fontSize: 13 }}>
               {auditCheck.valid

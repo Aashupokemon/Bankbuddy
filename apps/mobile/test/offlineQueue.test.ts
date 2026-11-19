@@ -100,7 +100,7 @@ test("a failed send leaves the queue untouched and replay stays idempotent", asy
   assert.equal(await createOfflineQueue(storage).count(), 0);
 });
 
-test("conflicts and rejections are reported and dropped from the queue", async () => {
+test("conflicts are kept for review while rejections are dropped", async () => {
   const { storage } = memoryStorage();
   const queue = createOfflineQueue(storage);
 
@@ -115,6 +115,29 @@ test("conflicts and rejections are reported and dropped from the queue", async (
   ]);
 
   assert.deepEqual(outcome, { applied: 1, conflicts: 1, rejected: 1, remaining: 0 });
+
+  // The conflicting edit is not lost: it waits in a review list until someone dismisses it.
+  const kept = await queue.listConflicts();
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0]?.operation.id, "77777777-7777-4777-8777-777777777777");
+
+  await queue.dismissConflict("77777777-7777-4777-8777-777777777777");
+  assert.equal((await queue.listConflicts()).length, 0);
+  assert.equal((await createOfflineQueue(storage).listConflicts()).length, 0);
+});
+
+test("a conflict survives an app restart so it is not silently lost", async () => {
+  const { storage } = memoryStorage();
+  const queue = createOfflineQueue(storage);
+  await queue.enqueue(operation("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "Edited offline"));
+
+  await queue.flush(async (batch) => [{ id: batch[0]!.id, status: "conflict" }]);
+
+  const restarted = createOfflineQueue(storage);
+  const kept = await restarted.listConflicts();
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0]?.operation.payload.title, "Edited offline");
+  assert.equal(await restarted.count(), 0, "it is out of the retry queue, not retried forever");
 });
 
 test("flushing an empty queue does not call the server", async () => {

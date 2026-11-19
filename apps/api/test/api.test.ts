@@ -99,6 +99,33 @@ test("/me reports the resolved role, branch and permissions", async () => {
   assert.ok(!auditor.json.permissions.includes("task.create"));
 });
 
+test("a multi-branch user signs in to the branch whose row was chosen", async () => {
+  const list = await api("/api/v1/auth/users");
+  assert.equal(list.status, 200);
+  const rows = list.json.users.filter((u: { email: string }) => u.email === "admin@workspace.example");
+  assert.deepEqual(
+    rows.map((u: { branch: string }) => u.branch).sort(),
+    ["Koramangala Branch", "MG Road Branch"],
+    "the workspace admin has one sign-in row per membership",
+  );
+
+  for (const row of rows) {
+    const response = await api("/api/v1/auth/dev-login", {
+      method: "POST",
+      body: { email: row.email, branchId: row.branchId },
+    });
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.json.me.branch.id, row.branchId);
+    assert.equal(response.json.me.branch.name, row.branch);
+  }
+
+  const unknownBranch = await api("/api/v1/auth/dev-login", {
+    method: "POST",
+    body: { email: "admin@workspace.example", branchId: "00000000-0000-0000-0000-000000000000" },
+  });
+  assert.equal(unknownBranch.status, 404, "no membership in that branch, so no session");
+});
+
 test("a branch cannot read another branch's task", async () => {
   const betaList = await api("/api/v1/tasks", { token: accounts["sanjay@beta.example"]!.token });
   assert.equal(betaList.status, 200);
@@ -192,6 +219,50 @@ test("create, version conflict and successful update", async () => {
   });
   assert.equal(viaHeader.status, 200);
   assert.equal(viaHeader.json.version, 2);
+});
+
+test("free-text search matches title and details, inside one branch only", async () => {
+  const manager = accounts["priya@alpha.example"]!;
+  const created = await api("/api/v1/tasks", {
+    method: "POST",
+    token: manager.token,
+    body: {
+      title: "Reconcile the treasury suspense ledger",
+      description: "End of day, synthetic",
+      unassigned: true,
+    },
+  });
+  assert.equal(created.status, 201, created.text);
+
+  const found = await api(`/api/v1/tasks?q=${encodeURIComponent("treasury suspense")}`, { token: manager.token });
+  assert.equal(found.status, 200);
+  assert.ok(
+    found.json.items.some((task: { id: string }) => task.id === created.json.id),
+    "the created task is found by words from its title",
+  );
+
+  const byDescription = await api("/api/v1/tasks?q=synthetic", { token: manager.token });
+  assert.ok(byDescription.json.items.some((task: { id: string }) => task.id === created.json.id));
+
+  // Search must never become a way around branch isolation.
+  const otherBranch = await api("/api/v1/tasks?q=treasury", { token: accounts["sanjay@beta.example"]!.token });
+  assert.equal(otherBranch.status, 200);
+  assert.equal(otherBranch.json.items.length, 0);
+});
+
+test("the audit trail exports as CSV, for roles that may read it", async () => {
+  const manager = accounts["priya@alpha.example"]!;
+  const response = await api("/api/v1/audit/export.csv", { token: manager.token });
+  assert.equal(response.status, 200);
+  const lines = response.text.trim().split("\r\n");
+  assert.equal(lines[0], "occurred_at,action,entity_type,entity_id,actor,reason,prev_hash,hash");
+  assert.ok(lines.length > 1, "the branch has audit rows to export");
+  for (const line of lines.slice(1)) {
+    assert.equal(line.split(",").length >= 8 || line.includes('"'), true, "every row is a full record");
+  }
+
+  const employee = await api("/api/v1/audit/export.csv", { token: accounts["ravi@alpha.example"]!.token });
+  assert.equal(employee.status, 403, "an employee cannot export the audit trail");
 });
 
 test("past due dates are rejected, date-only values keep their precision", async () => {
@@ -406,6 +477,168 @@ test("handover transfers ownership when accepted", async () => {
 
   const task = await api(`/api/v1/tasks/${created.json.id}`, { token: employee.token });
   assert.equal(task.json.ownerId, employee.userId);
+});
+
+test("recurring chores create one task per day and never duplicate", async () => {
+  const manager = accounts["priya@alpha.example"]!;
+
+  const daily = await api("/api/v1/templates", {
+    method: "POST",
+    token: manager.token,
+    body: { title: "Open the branch safe", cadence: "daily", dueTime: "09:15", priority: "high" },
+  });
+  assert.equal(daily.status, 201, daily.text);
+  assert.equal(daily.json.cadence, "daily");
+  assert.equal(daily.json.active, true);
+
+  const weekly = await api("/api/v1/templates", {
+    method: "POST",
+    token: manager.token,
+    body: { title: "Weekly fire-safety walk", cadence: "weekly", weekday: 1, dueTime: "16:00" },
+  });
+  assert.equal(weekly.status, 201, weekly.text);
+
+  const monday = "2026-12-07";
+  const first = await api("/api/v1/templates/run", {
+    method: "POST",
+    token: manager.token,
+    body: { date: monday },
+  });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.json.created, 2, "both chores are due on a Monday");
+  assert.ok(first.json.items.every((task: { duePrecision: string }) => task.duePrecision === "datetime"));
+
+  // Running again on the same day is safe: the database dedupes by (template, date).
+  const again = await api("/api/v1/templates/run", {
+    method: "POST",
+    token: manager.token,
+    body: { date: monday },
+  });
+  assert.equal(again.json.created, 0);
+  assert.equal(again.json.skipped, 2);
+
+  const tuesday = await api("/api/v1/templates/run", {
+    method: "POST",
+    token: manager.token,
+    body: { date: "2026-12-08" },
+  });
+  assert.equal(tuesday.json.created, 1, "the weekly chore is not due on a Tuesday");
+
+  const board = await api("/api/v1/tasks?q=fire-safety", { token: manager.token });
+  assert.equal(board.json.items.length, 1, "chores are ordinary tasks on the board");
+
+  const listed = await api("/api/v1/templates", { token: manager.token });
+  assert.ok(listed.json.items.some((template: { lastRunOn: string | null }) => template.lastRunOn === "2026-12-07"));
+
+  // Chores are operational policy, not something an employee can invent or run.
+  const employee = accounts["ravi@alpha.example"]!;
+  const refused = await api("/api/v1/templates", {
+    method: "POST",
+    token: employee.token,
+    body: { title: "Sneaky chore", cadence: "daily", dueTime: "10:00" },
+  });
+  assert.equal(refused.status, 403);
+  assert.equal(
+    (await api("/api/v1/templates/run", { method: "POST", token: employee.token, body: {} })).status,
+    403,
+  );
+});
+
+test("bulk reassignment moves a batch in one call and can leave it unassigned", async () => {
+  const manager = accounts["priya@alpha.example"]!;
+  const employee = accounts["ravi@alpha.example"]!;
+
+  const taskIds: string[] = [];
+  for (const title of ["Bulk reassign one", "Bulk reassign two"]) {
+    const created = await api("/api/v1/tasks", {
+      method: "POST",
+      token: manager.token,
+      body: { title, unassigned: true },
+    });
+    assert.equal(created.status, 201, created.text);
+    taskIds.push(created.json.id);
+  }
+
+  const moved = await api("/api/v1/tasks/bulk-reassign", {
+    method: "POST",
+    token: manager.token,
+    body: { taskIds, ownerId: employee.userId, reason: "Shift change" },
+  });
+  assert.equal(moved.status, 200, moved.text);
+  assert.equal(moved.json.updated, 2);
+
+  for (const id of taskIds) {
+    const task = await api(`/api/v1/tasks/${id}`, { token: manager.token });
+    assert.equal(task.json.ownerId, employee.userId);
+    assert.equal(task.json.unassigned, false);
+  }
+
+  const cleared = await api("/api/v1/tasks/bulk-reassign", {
+    method: "POST",
+    token: manager.token,
+    body: { taskIds: taskIds.slice(0, 1), ownerId: null },
+  });
+  assert.equal(cleared.json.updated, 1);
+  const unassigned = await api(`/api/v1/tasks/${taskIds[0]}`, { token: manager.token });
+  assert.equal(unassigned.json.ownerId, null);
+  assert.equal(unassigned.json.unassigned, true);
+
+  const refused = await api("/api/v1/tasks/bulk-reassign", {
+    method: "POST",
+    token: employee.token,
+    body: { taskIds, ownerId: employee.userId },
+  });
+  assert.equal(refused.status, 403);
+});
+
+test("a whole-shift handover covers the outgoing person's open work only", async () => {
+  const lead = accounts["arun@alpha.example"]!;
+  const employee = accounts["ravi@alpha.example"]!;
+
+  const openIds: string[] = [];
+  for (const title of ["Shift handover open one", "Shift handover open two"]) {
+    const created = await api("/api/v1/tasks", {
+      method: "POST",
+      token: lead.token,
+      body: { title, ownerId: lead.userId },
+    });
+    openIds.push(created.json.id);
+  }
+  const finished = await api("/api/v1/tasks", {
+    method: "POST",
+    token: lead.token,
+    body: { title: "Shift handover already finished", ownerId: lead.userId },
+  });
+  await api(`/api/v1/tasks/${finished.json.id}/status`, {
+    method: "POST",
+    token: lead.token,
+    body: { version: 0, status: "done" },
+  });
+
+  const proposed = await api("/api/v1/handovers", {
+    method: "POST",
+    token: lead.token,
+    body: { toUserId: employee.userId, scope: "shift", note: "End of the evening shift" },
+  });
+  assert.equal(proposed.status, 201, proposed.text);
+
+  const handover = (await api("/api/v1/handovers", { token: lead.token })).json.items.find(
+    (item: { id: string }) => item.id === proposed.json.id,
+  );
+  assert.equal(handover.scope, "shift");
+  const handedIds = handover.tasks.map((task: { id: string }) => task.id);
+  for (const id of openIds) assert.ok(handedIds.includes(id), "every open task of the shift is included");
+  assert.ok(!handedIds.includes(finished.json.id), "finished work is not handed over");
+
+  const accepted = await api(`/api/v1/handovers/${proposed.json.id}/respond`, {
+    method: "POST",
+    token: employee.token,
+    body: { decision: "accept" },
+  });
+  assert.equal(accepted.status, 200, accepted.text);
+
+  const reassigned = await api(`/api/v1/tasks/${openIds[0]}`, { token: employee.token });
+  assert.equal(reassigned.json.ownerId, employee.userId);
 });
 
 /* ------------------------------------------------------------------ assistant */

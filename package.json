@@ -27,6 +27,8 @@
     "mobile:android": "expo start --android",
     "mobile:bundle": "npm run bundle --workspace @bankbuddy/mobile",
     "mobile:apk": "bash ./scripts/build-apk.sh",
+    "mobile:e2e": "bash ./scripts/e2e-android.sh",
+    "mobile:keystore": "bash ./scripts/create-keystore.sh",
     "build": "tsc -b --pretty false"
   },
   "devDependencies": {

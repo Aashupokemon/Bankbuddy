@@ -113,6 +113,10 @@ export async function seed(database: Database): Promise<SeedSummary> {
     ownerId: string | null;
     dueAt: string | null;
     duePrecision: "date" | "datetime" | null;
+    // Both are offsets in hours from now, like dueAt. createdAt must precede completedAt, otherwise
+    // the pilot's "median time to complete" comes out negative.
+    createdAt: string;
+    completedAt?: string | null;
     blockedReason?: string | null;
     recurrence?: string | null;
   }
@@ -127,6 +131,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: employee.id,
       dueAt: iso(30),
       duePrecision: "datetime",
+      createdAt: iso(-72),
     },
     {
       title: "Reconcile the vault count against the register",
@@ -137,6 +142,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: lead.id,
       dueAt: iso(4),
       duePrecision: "datetime",
+      createdAt: iso(-6),
     },
     {
       title: "Overdue: respond to the audit observation on cheque storage",
@@ -147,6 +153,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: manager.id,
       dueAt: iso(-26),
       duePrecision: "date",
+      createdAt: iso(-96),
     },
     {
       title: "Fix the cheque-book request backlog",
@@ -157,6 +164,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: employee.id,
       dueAt: iso(52),
       duePrecision: "date",
+      createdAt: iso(-120),
       blockedReason: "Waiting for the vendor to restore the printer integration.",
     },
     {
@@ -168,6 +176,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: null,
       dueAt: iso(10),
       duePrecision: "datetime",
+      createdAt: iso(-8),
     },
     {
       title: "Weekly review of dormant account list",
@@ -178,6 +187,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: lead.id,
       dueAt: iso(72),
       duePrecision: "date",
+      createdAt: iso(-24),
       recurrence: "weekly",
     },
     {
@@ -189,6 +199,8 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: employee.id,
       dueAt: iso(-50),
       duePrecision: "date",
+      createdAt: iso(-96),
+      completedAt: iso(-48),
     },
     {
       title: "Cancel the duplicate stationery order",
@@ -199,6 +211,7 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: manager.id,
       dueAt: iso(-10),
       duePrecision: "date",
+      createdAt: iso(-30),
     },
   ];
 
@@ -210,8 +223,8 @@ export async function seed(database: Database): Promise<SeedSummary> {
         `insert into tasks (
            branch_id, title, description, status, priority, category_key, owner_id, unassigned_explicit,
            blocked_reason, due_at, due_precision, completed_at, completed_by, recurrence_rule,
-           created_by, updated_by, version
-         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11,$12,$13,$14,$15,$15,1)
+           created_by, updated_by, created_at, updated_at, version
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11,$12::timestamptz,$13,$14,$15,$15,$16::timestamptz,$16::timestamptz,1)
          returning id`,
         [
           alphaId,
@@ -225,10 +238,11 @@ export async function seed(database: Database): Promise<SeedSummary> {
           task.blockedReason ?? null,
           task.dueAt,
           task.dueAt === null ? null : task.duePrecision,
-          task.status === "done" ? iso(-48) : null,
+          task.status === "done" ? (task.completedAt ?? null) : null,
           task.status === "done" ? employee.id : null,
           task.recurrence ?? null,
           manager.id,
+          task.createdAt,
         ],
       )
     ).rows[0]!.id;
@@ -270,6 +284,8 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: betaEmployee.id,
       dueAt: iso(-20),
       duePrecision: "date",
+      createdAt: iso(-72),
+      completedAt: iso(-30),
     },
     {
       title: "Archive last quarter's visitor register",
@@ -280,14 +296,16 @@ export async function seed(database: Database): Promise<SeedSummary> {
       ownerId: betaEmployee.id,
       dueAt: iso(120),
       duePrecision: "date",
+      createdAt: iso(-48),
     },
   ];
 
   for (const task of betaTasks) {
     await database.query(
       `insert into tasks (branch_id, title, description, status, priority, category_key, owner_id,
-         unassigned_explicit, due_at, due_precision, created_by, updated_by, version)
-       values ($1,$2,$3,$4,$5,$6,$7,false,$8::timestamptz,$9,$10,$10,1)`,
+         unassigned_explicit, due_at, due_precision, completed_at, completed_by,
+         created_by, updated_by, created_at, updated_at, version)
+       values ($1,$2,$3,$4,$5,$6,$7,false,$8::timestamptz,$9,$10::timestamptz,$11,$12,$12,$13::timestamptz,$13::timestamptz,1)`,
       [
         betaId,
         task.title,
@@ -298,7 +316,10 @@ export async function seed(database: Database): Promise<SeedSummary> {
         task.ownerId,
         task.dueAt,
         task.dueAt === null ? null : task.duePrecision,
+        task.status === "done" ? (task.completedAt ?? null) : null,
+        task.status === "done" ? betaEmployee.id : null,
         betaEmployee.id,
+        task.createdAt,
       ],
     );
     taskCount += 1;
