@@ -67,6 +67,15 @@ export interface ApiClient {
   resetDemoMode(): void;
 }
 
+/** A body that is empty or not JSON is not an exception the caller should ever see. */
+function parseJsonOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function endpointMap(request: ApiClient["request"]) {
   return {
     devUsers: () => request<{ users: DevUser[] }>("/api/v1/auth/users", { token: null }),
@@ -267,19 +276,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     }
 
     const text = await response.text();
-    // A proxy or gateway can answer with an HTML page. An unreadable body must not escape as a
-    // SyntaxError: callers only know how to handle ApiFailure, and an HTTP error still has to be an
-    // error rather than fall back to demo data.
-    let payload: unknown = null;
-    try {
-      payload = text ? (JSON.parse(text) as unknown) : null;
-    } catch {
-      payload = null;
-    }
+    // A proxy or gateway can answer with an HTML page; optional chaining below reads nothing from it.
+    const payload = parseJsonOrNull(text);
 
     if (!response.ok) {
-      const problem =
-        payload && typeof payload === "object" ? (payload as { title?: string; code?: string }) : null;
+      const problem = payload as { title?: string; code?: string } | null;
       throw new ApiFailure(
         response.status,
         problem?.code ?? "error",
@@ -287,6 +288,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       );
     }
     if (requestOptions.as === "text") return text as T;
+    // No body at all is a normal 204; a body that did not parse is a broken success.
     if (!text) return null as T;
     if (payload === null) {
       throw new ApiFailure(response.status, "invalid_response", "The server sent a response that is not JSON");

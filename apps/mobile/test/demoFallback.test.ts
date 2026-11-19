@@ -181,3 +181,26 @@ test("a non-JSON error body still surfaces as ApiFailure", async () => {
   // An HTTP error from a reachable server still surfaces; only transport failures use demo data.
   assert.equal(app.isDemoMode(), false);
 });
+
+test("a 200 that is not JSON becomes invalid_response, not a SyntaxError", async () => {
+  const app = client({
+    fetchImpl: (async () =>
+      new Response("<html><body>Captive portal</body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      })) as typeof fetch,
+  });
+
+  await assert.rejects(
+    () => app.api.dashboard(),
+    (error: unknown) => {
+      assert.ok(error instanceof ApiFailure, "a broken success body must not become a SyntaxError");
+      assert.equal(error.status, 200);
+      assert.equal(error.code, "invalid_response");
+      assert.equal(error.message, "The server sent a response that is not JSON");
+      return true;
+    },
+  );
+
+  assert.equal(app.isDemoMode(), false, "a reachable server never switches the app to demo data");
+});
