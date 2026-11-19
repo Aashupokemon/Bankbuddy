@@ -82,20 +82,26 @@ export default function BoardScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  // The counts are branch-wide and depend on neither the filter nor the search text, so they are
+  // fetched separately. A keystroke only refetches the list.
+  const loadDashboard = useCallback(async () => {
     try {
-      setError(null);
-      const [dashboardResponse, list] = await Promise.all([
-        api.dashboard(),
-        // api.tasks drops empty values, so an empty query simply sends no q parameter.
-        api.tasks({
-          ...(filter === "mine" ? { scope: "mine" } : {}),
-          ...(filter === "all" ? {} : { filter }),
-          q: query,
-          limit: 50,
-        }),
-      ]);
-      setDashboard(dashboardResponse);
+      setDashboard(await api.dashboard());
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Could not load the board");
+    }
+  }, []);
+
+  const loadTasks = useCallback(async () => {
+    setError(null);
+    try {
+      // api.tasks drops empty values, so an empty query simply sends no q parameter.
+      const list = await api.tasks({
+        ...(filter === "mine" ? { scope: "mine" } : {}),
+        ...(filter === "all" ? {} : { filter }),
+        q: query,
+        limit: 50,
+      });
       setTasks(list.items);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not load the board");
@@ -125,9 +131,15 @@ export default function BoardScreen({
     void AsyncStorage.setItem(FILTER_KEY, next).catch(() => undefined);
   };
 
+  // The list follows the filter and the debounced query. refreshKey means a task changed elsewhere,
+  // which moves the counts as well, so that one reloads both.
   useEffect(() => {
-    void load();
-  }, [load, refreshKey]);
+    void loadTasks();
+  }, [loadTasks, refreshKey]);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard, refreshKey]);
 
   const counts = dashboard?.counts;
 
@@ -142,7 +154,8 @@ export default function BoardScreen({
           tintColor={colors.mint}
           onRefresh={() => {
             setRefreshing(true);
-            void load();
+            void loadTasks();
+            void loadDashboard();
           }}
         />
       }
