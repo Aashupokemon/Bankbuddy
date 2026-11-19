@@ -157,3 +157,27 @@ test("an HTTP error from a reachable API is surfaced instead of falling back", a
 
   assert.equal(app.isDemoMode(), false, "a reachable server never switches the app to demo data");
 });
+
+test("a non-JSON error body still surfaces as ApiFailure", async () => {
+  const app = client({
+    fetchImpl: (async () =>
+      new Response("<html><body>502 Bad Gateway</body></html>", {
+        status: 502,
+        headers: { "content-type": "text/html" },
+      })) as typeof fetch,
+  });
+
+  await assert.rejects(
+    () => app.api.dashboard(),
+    (error: unknown) => {
+      assert.ok(error instanceof ApiFailure, "an HTML error page must not become a raw SyntaxError");
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "error");
+      assert.equal(error.message, "Request failed (502)");
+      return true;
+    },
+  );
+
+  // An HTTP error from a reachable server still surfaces; only transport failures use demo data.
+  assert.equal(app.isDemoMode(), false);
+});

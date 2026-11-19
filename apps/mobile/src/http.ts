@@ -267,17 +267,31 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     }
 
     const text = await response.text();
-    const payload = text ? (JSON.parse(text) as unknown) : null;
+    // A proxy or gateway can answer with an HTML page. An unreadable body must not escape as a
+    // SyntaxError: callers only know how to handle ApiFailure, and an HTTP error still has to be an
+    // error rather than fall back to demo data.
+    let payload: unknown = null;
+    try {
+      payload = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      payload = null;
+    }
 
     if (!response.ok) {
-      const problem = payload as { title?: string; code?: string } | null;
+      const problem =
+        payload && typeof payload === "object" ? (payload as { title?: string; code?: string }) : null;
       throw new ApiFailure(
         response.status,
         problem?.code ?? "error",
         problem?.title ?? `Request failed (${response.status})`,
       );
     }
-    return (requestOptions.as === "text" ? text : payload) as T;
+    if (requestOptions.as === "text") return text as T;
+    if (!text) return null as T;
+    if (payload === null) {
+      throw new ApiFailure(response.status, "invalid_response", "The server sent a response that is not JSON");
+    }
+    return payload as T;
   }
 
   return {
