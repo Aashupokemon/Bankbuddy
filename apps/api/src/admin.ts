@@ -42,33 +42,98 @@ const AUDIT_CSV_COLUMNS = [
   "hash",
 ] as const;
 
+interface AuditRow {
+  id: string;
+  occurred_at: Date | string;
+  actor_id: string | null;
+  actor_name: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  reason: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  prev_hash: string | null;
+  hash: string;
+}
+
+const AUDIT_SELECT = `
+  select a.id, a.occurred_at, a.actor_id, u.name as actor_name, a.action, a.entity_type, a.entity_id,
+         a.reason, a.before, a.after, a.prev_hash, a.hash
+    from audit_events a
+    left join users u on u.id = a.actor_id
+`;
+
+function mapAuditRow(row: AuditRow): AuditEventDto {
+  return {
+    id: row.id,
+    occurredAt: new Date(row.occurred_at).toISOString(),
+    actorId: row.actor_id,
+    actorName: row.actor_name,
+    action: row.action,
+    entityType: row.entity_type,
+    entityId: row.entity_id ?? "",
+    reason: row.reason,
+    before: row.before,
+    after: row.after,
+    prevHash: row.prev_hash,
+    hash: row.hash,
+  };
+}
+
+/** The branch and filter predicate shared by the on-screen list and the CSV export. */
+function auditWhere(identity: Identity, query: AuditQuery): { clause: string; params: unknown[] } {
+  const where = ["a.branch_id = $1"];
+  const params: unknown[] = [identity.branchId];
+  const add = (sql: string, value: unknown): void => {
+    params.push(value);
+    where.push(sql.replace("$?", `$${params.length}`));
+  };
+  if (query.action) add("a.action = $?", query.action);
+  if (query.entityType) add("a.entity_type = $?", query.entityType);
+  if (query.entityId) add("a.entity_id = $?", query.entityId);
+  if (query.actorId) add("a.actor_id = $?", query.actorId);
+  return { clause: where.join(" and "), params };
+}
+
 /**
- * The branch trail as CSV, paged through the same filtered query the app uses so an export always
- * matches what was on screen. Capped well above a branch's daily volume rather than unbounded.
+ * The branch trail as CSV, with the same filters as the list. One query rather than a paged loop:
+ * paging by offset while auditing the read would shift the pages and duplicate or skip rows, and it
+ * would add one audit entry per page. The cap is well above a branch's daily volume.
  */
 export async function exportAuditCsv(db: Queryable, identity: Identity, query: AuditQuery = {}): Promise<string> {
   assertPermission(identity, "audit.read");
+  const { clause, params } = auditWhere(identity, query);
 
-  const rows: AuditEventDto[] = [];
-  let cursor: string | null = null;
-  do {
-    const page = await listAuditEvents(db, identity, { ...query, limit: 200, cursor });
-    rows.push(...page.items);
-    cursor = page.nextCursor;
-  } while (cursor && rows.length < 2000);
+  const rows = await db.query<AuditRow>(`${AUDIT_SELECT} where ${clause} order by a.seq desc limit 2000`, params);
+
+  // Reading audit is itself an audited action — once per export, not once per page.
+  await writeAudit(db, {
+    branchId: identity.branchId,
+    actorId: identity.userId,
+    action: "audit.read",
+    entityType: "audit_events",
+    entityId: null,
+    after: {
+      filter: { action: query.action ?? null, entityType: query.entityType ?? null },
+      export: true,
+      rows: rows.rowCount,
+    },
+  });
 
   const lines = [AUDIT_CSV_COLUMNS.join(",")];
-  for (const row of rows) {
+  for (const row of rows.rows) {
+    const event = mapAuditRow(row);
     lines.push(
       [
-        row.occurredAt,
-        row.action,
-        row.entityType,
-        row.entityId,
-        row.actorName ?? "",
-        row.reason ?? "",
-        row.prevHash ?? "",
-        row.hash,
+        event.occurredAt,
+        event.action,
+        event.entityType,
+        event.entityId,
+        event.actorName ?? "",
+        event.reason ?? "",
+        event.prevHash ?? "",
+        event.hash,
       ]
         .map(csvCell)
         .join(","),
@@ -86,41 +151,11 @@ export async function listAuditEvents(
   assertPermission(identity, "audit.read");
   const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
   const offset = query.cursor ? Number(Buffer.from(query.cursor, "base64url").toString("utf8")) || 0 : 0;
+  const { clause, params } = auditWhere(identity, query);
 
-  const where = ["a.branch_id = $1"];
-  const params: unknown[] = [identity.branchId];
-  const add = (sql: string, value: unknown): void => {
-    params.push(value);
-    where.push(sql.replace("$?", `$${params.length}`));
-  };
-  if (query.action) add("a.action = $?", query.action);
-  if (query.entityType) add("a.entity_type = $?", query.entityType);
-  if (query.entityId) add("a.entity_id = $?", query.entityId);
-  if (query.actorId) add("a.actor_id = $?", query.actorId);
-
-  const clause = where.join(" and ");
   const total = await db.query<{ count: string }>(`select count(*)::text as count from audit_events a where ${clause}`, params);
-  const rows = await db.query<{
-    id: string;
-    occurred_at: Date | string;
-    actor_id: string | null;
-    actor_name: string | null;
-    action: string;
-    entity_type: string;
-    entity_id: string | null;
-    reason: string | null;
-    before: Record<string, unknown> | null;
-    after: Record<string, unknown> | null;
-    prev_hash: string | null;
-    hash: string;
-  }>(
-    `select a.id, a.occurred_at, a.actor_id, u.name as actor_name, a.action, a.entity_type, a.entity_id,
-            a.reason, a.before, a.after, a.prev_hash, a.hash
-       from audit_events a
-       left join users u on u.id = a.actor_id
-      where ${clause}
-      order by a.seq desc
-      limit ${limit} offset ${offset}`,
+  const rows = await db.query<AuditRow>(
+    `${AUDIT_SELECT} where ${clause} order by a.seq desc limit ${limit} offset ${offset}`,
     params,
   );
 
@@ -136,20 +171,7 @@ export async function listAuditEvents(
 
   const totalCount = Number(total.rows[0]?.count ?? 0);
   return {
-    items: rows.rows.map((row) => ({
-      id: row.id,
-      occurredAt: new Date(row.occurred_at).toISOString(),
-      actorId: row.actor_id,
-      actorName: row.actor_name,
-      action: row.action,
-      entityType: row.entity_type,
-      entityId: row.entity_id ?? "",
-      reason: row.reason,
-      before: row.before,
-      after: row.after,
-      prevHash: row.prev_hash,
-      hash: row.hash,
-    })),
+    items: rows.rows.map(mapAuditRow),
     total: totalCount,
     nextCursor:
       offset + rows.rows.length < totalCount ? Buffer.from(String(offset + rows.rows.length)).toString("base64url") : null,

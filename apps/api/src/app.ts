@@ -25,6 +25,7 @@ import {
   acknowledgeAll,
   acknowledgeNotification,
   createCategory,
+  exportAuditCsv,
   getSettings,
   listAuditEvents,
   listCategories,
@@ -36,6 +37,7 @@ import {
 } from "./admin.ts";
 import { extractDraft } from "./assistant.ts";
 import {
+  assertPermission,
   authentication,
   devLogin,
   listDevUsers,
@@ -451,7 +453,6 @@ export function createApp(database: Database): express.Express {
     "/api/v1/audit/verify",
     route(async (req, res) => {
       const result = await scoped(req, async (tx, identity) => {
-        const { assertPermission } = await import("./auth.ts");
         assertPermission(identity, "audit.read");
         return verifyAuditChain(tx, identity.branchId);
       });
@@ -462,15 +463,14 @@ export function createApp(database: Database): express.Express {
   app.get(
     "/api/v1/audit/export.csv",
     route(async (req, res) => {
-      const csv = await scoped(req, async (tx, identity) => {
-        const { exportAuditCsv } = await import("./admin.ts");
-        return exportAuditCsv(tx, identity, {
+      const csv = await scoped(req, (tx, identity) =>
+        exportAuditCsv(tx, identity, {
           ...(queryString(req.query.action) ? { action: queryString(req.query.action)! } : {}),
           ...(queryString(req.query.entityType) ? { entityType: queryString(req.query.entityType)! } : {}),
           ...(queryString(req.query.entityId) ? { entityId: queryString(req.query.entityId)! } : {}),
           ...(queryString(req.query.actorId) ? { actorId: queryString(req.query.actorId)! } : {}),
-        });
-      });
+        }),
+      );
       // A download for the manager's own device, not a cached page.
       res.setHeader("content-type", "text/csv; charset=utf-8");
       res.setHeader("content-disposition", 'attachment; filename="bankbuddy-audit.csv"');
@@ -483,7 +483,6 @@ export function createApp(database: Database): express.Express {
     route(async (req, res) => {
       const windowDays = Number(queryString(req.query.windowDays) ?? 30);
       const payload = await scoped(req, async (tx, identity) => {
-        const { assertPermission } = await import("./auth.ts");
         assertPermission(identity, "analytics.read");
         return analyticsSummary(tx, identity, windowDays);
       });

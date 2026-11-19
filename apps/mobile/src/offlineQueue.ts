@@ -175,31 +175,32 @@ export function createOfflineQueue(storage: QueueStorage): OfflineQueue {
       try {
         const batch = queue.slice(0, MAX_BATCH);
         const results = await send(batch);
-
-        const settled = new Map(results.map((result) => [result.id, result.status]));
-        const applied = results.filter((r) => r.status === "applied" || r.status === "replayed").length;
-        const conflicts = results.filter((r) => r.status === "conflict").length;
-        const rejected = results.filter((r) => r.status === "rejected").length;
+        const answered = new Set(results.map((result) => result.id));
+        const conflicted = new Set(results.filter((r) => r.status === "conflict").map((r) => r.id));
 
         // Only operations the server answered for leave the queue. Anything it did not mention stays
         // and will be retried, which is safe because replay is idempotent.
-        const remaining = queue.filter((operation) => !settled.has(operation.id));
+        const remaining = queue.filter((operation) => !answered.has(operation.id));
         cache = remaining;
         await persist();
 
         // A conflict means two people changed the same task; dropping it would silently lose one
         // edit, so the operation is kept aside for review and removed only when someone dismisses it.
-        if (conflicts > 0) {
-          const known = await loadConflicts();
+        // Only the batch that was just sent can add entries, so no separate de-duplication is needed.
+        if (conflicted.size > 0) {
           const at = new Date().toISOString();
-          const added = queue
-            .filter((operation) => settled.get(operation.id) === "conflict")
-            .filter((operation) => !known.some((item) => item.operation.id === operation.id))
+          const added = batch
+            .filter((operation) => conflicted.has(operation.id))
             .map((operation) => ({ operation, at }));
-          if (added.length > 0) await persistConflicts([...known, ...added]);
+          await persistConflicts([...(await loadConflicts()), ...added]);
         }
 
-        return { applied, conflicts, rejected, remaining: remaining.length };
+        return {
+          applied: results.filter((r) => r.status === "applied" || r.status === "replayed").length,
+          conflicts: conflicted.size,
+          rejected: results.filter((r) => r.status === "rejected").length,
+          remaining: remaining.length,
+        };
       } finally {
         flushing = false;
       }

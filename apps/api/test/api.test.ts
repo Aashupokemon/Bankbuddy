@@ -261,6 +261,12 @@ test("the audit trail exports as CSV, for roles that may read it", async () => {
     assert.equal(line.split(",").length >= 8 || line.includes('"'), true, "every row is a full record");
   }
 
+  // The export shares its filter with the on-screen list, so a filtered download stays filtered.
+  const filtered = await api("/api/v1/audit/export.csv?action=task.create", { token: manager.token });
+  const filteredRows = filtered.text.trim().split("\r\n").slice(1);
+  assert.ok(filteredRows.length > 0);
+  assert.ok(filteredRows.every((line) => line.includes("task.create")), "only matching actions are exported");
+
   const employee = await api("/api/v1/audit/export.csv", { token: accounts["ravi@alpha.example"]!.token });
   assert.equal(employee.status, 403, "an employee cannot export the audit trail");
 });

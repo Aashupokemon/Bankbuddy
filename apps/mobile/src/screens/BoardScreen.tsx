@@ -87,10 +87,11 @@ export default function BoardScreen({
       setError(null);
       const [dashboardResponse, list] = await Promise.all([
         api.dashboard(),
+        // api.tasks drops empty values, so an empty query simply sends no q parameter.
         api.tasks({
           ...(filter === "mine" ? { scope: "mine" } : {}),
           ...(filter === "all" ? {} : { filter }),
-          ...(query ? { q: query } : {}),
+          q: query,
           limit: 50,
         }),
       ]);

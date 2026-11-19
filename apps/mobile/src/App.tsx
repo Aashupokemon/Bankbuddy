@@ -7,7 +7,6 @@ import {
   api,
   clearToken,
   flushQueue,
-  isDemoMode,
   loadToken,
   resetDemoMode,
   subscribeDemoMode,
@@ -32,7 +31,8 @@ export default function App(): React.JSX.Element {
   const [screen, setScreen] = useState<"templates" | "shift" | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [queued, setQueued] = useState(0);
-  const [demo, setDemo] = useState(isDemoMode());
+  // subscribeDemoMode calls the listener with the current value, so it seeds this state too.
+  const [demo, setDemo] = useState(false);
 
   useEffect(() => {
     (async () => {

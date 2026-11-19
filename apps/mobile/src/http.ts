@@ -26,7 +26,6 @@ export class ApiFailure extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
-    readonly payload: unknown = null,
   ) {
     super(message);
   }
@@ -45,7 +44,7 @@ export interface RequestOptions {
   body?: unknown;
   token?: string | null;
   /** "text" keeps the body as-is instead of parsing JSON, for the CSV export. */
-  as?: "json" | "text";
+  as?: "text";
 }
 
 export interface ApiClientOptions {
@@ -264,7 +263,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         setDemoMode(true);
         return local as T;
       }
-      throw new ApiFailure(0, "network_unavailable", "Cannot reach the server. Check the connection.", error);
+      throw new ApiFailure(0, "network_unavailable", "Cannot reach the server. Check the connection.");
     }
 
     const text = await response.text();
@@ -276,7 +275,6 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         response.status,
         problem?.code ?? "error",
         problem?.title ?? `Request failed (${response.status})`,
-        payload,
       );
     }
     return (requestOptions.as === "text" ? text : payload) as T;
