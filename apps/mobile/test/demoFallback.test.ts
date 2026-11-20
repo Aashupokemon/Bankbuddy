@@ -204,3 +204,38 @@ test("a 200 that is not JSON becomes invalid_response, not a SyntaxError", async
 
   assert.equal(app.isDemoMode(), false, "a reachable server never switches the app to demo data");
 });
+
+test("demo data answers the checklist endpoints and keeps progress in step", async () => {
+  const app = client();
+
+  const before = await app.api.checklist("demo-task-1");
+  assert.ok(before.total > 0, "the demo task ships with steps to show");
+  assert.equal(before.items.length, before.total);
+  assert.ok(before.items.every((item) => item.taskId === "demo-task-1" && item.title.length > 0));
+  assert.deepEqual(
+    before.items.map((item) => item.position),
+    [...before.items.map((item) => item.position)].sort((a, b) => a - b),
+    "steps come back in checklist order",
+  );
+
+  const added = await app.api.addChecklistItem("demo-task-1", "Ask for the PAN copy");
+  assert.equal(added.done, false);
+  assert.ok(added.position >= before.total);
+
+  const toggled = await app.api.updateChecklistItem("demo-task-1", added.id, { done: true });
+  assert.equal(toggled.done, true);
+  assert.ok(toggled.completedAt, "checking a step records when it happened");
+
+  const after = await app.api.checklist("demo-task-1");
+  assert.deepEqual([after.total, after.done], [before.total + 1, before.done + 1]);
+
+  const task = await app.api.task("demo-task-1");
+  assert.deepEqual([task.checklistTotal, task.checklistDone], [after.total, after.done]);
+  assert.ok(
+    (await app.api.tasks({ limit: 50 })).items.some((item) => item.id === "demo-task-1" && item.checklistTotal > 0),
+    "the board list carries checklist progress too",
+  );
+
+  await app.api.removeChecklistItem("demo-task-1", added.id);
+  assert.equal((await app.api.checklist("demo-task-1")).total, before.total);
+});

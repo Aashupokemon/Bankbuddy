@@ -11,7 +11,14 @@
 
 export interface QueueOperation {
   id: string;
-  kind: "task.create" | "task.update" | "task.transition" | "comment.create";
+  kind:
+    | "task.create"
+    | "task.update"
+    | "task.transition"
+    | "comment.create"
+    | "checklist.add"
+    | "checklist.update"
+    | "checklist.remove";
   at?: string;
   payload: Record<string, unknown>;
 }

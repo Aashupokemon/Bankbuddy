@@ -6,8 +6,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { DashboardResponse, MeResponse, TaskDto } from "@bankbuddy/contracts";
 
 import { api } from "../api";
+import { cacheKeys, recall, remember } from "../offlineCache";
+import { syncReminders } from "../notifications";
+import { listSavedViews, removeSavedView, saveView, type SavedView } from "../savedViews";
 import { colors, priorityColor, radius, spacing, statusColor } from "../theme";
-import { Badge, Card, Chip, Empty } from "../ui";
+import { Badge, Card, Chip, Empty, Field } from "../ui";
 
 type Filter = "all" | "mine" | "due_today" | "overdue" | "blocked";
 
@@ -60,6 +63,17 @@ export function TaskRow({ task, onPress }: { task: TaskDto; onPress: () => void 
           Waiting on {task.blockedByCount} other task{task.blockedByCount > 1 ? "s" : ""}
         </Text>
       ) : null}
+      {task.checklistTotal > 0 ? (
+        <Text
+          style={[
+            styles.metaText,
+            task.checklistDone === task.checklistTotal ? { color: colors.mint } : null,
+          ]}
+        >
+          Checklist {task.checklistDone}/{task.checklistTotal}
+          {task.checklistDone === task.checklistTotal ? " · complete" : ""}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }
@@ -81,19 +95,32 @@ export default function BoardScreen({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const [views, setViews] = useState<SavedView[]>([]);
+  const [namingView, setNamingView] = useState(false);
+  const [viewName, setViewName] = useState("");
 
   // The counts are branch-wide and depend on neither the filter nor the search text, so they are
   // fetched separately. A keystroke only refetches the list.
   const loadDashboard = useCallback(async () => {
     try {
-      setDashboard(await api.dashboard());
+      const fresh = await api.dashboard();
+      setDashboard(fresh);
+      void remember(cacheKeys.dashboard, fresh);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not load the board");
+      const cached = await recall<DashboardResponse>(cacheKeys.dashboard);
+      if (cached) {
+        setDashboard(cached.value);
+        setStale(true);
+      } else {
+        setError(failure instanceof Error ? failure.message : "Could not load the board");
+      }
     }
   }, []);
 
   const loadTasks = useCallback(async () => {
     setError(null);
+    const queryKey = `${filter}.${query}`;
     try {
       // api.tasks drops empty values, so an empty query simply sends no q parameter.
       const list = await api.tasks({
@@ -103,13 +130,24 @@ export default function BoardScreen({
         limit: 50,
       });
       setTasks(list.items);
+      setStale(false);
+      void remember(cacheKeys.tasks(queryKey), list.items);
+      // Reminders are rebuilt from the same list the person is looking at, so a moved due date cannot
+      // leave an alert from yesterday behind.
+      void syncReminders(list.items, me.settings).catch(() => 0);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Could not load the board");
+      const cached = await recall<TaskDto[]>(cacheKeys.tasks(queryKey));
+      if (cached) {
+        setTasks(cached.value);
+        setStale(true);
+      } else {
+        setError(failure instanceof Error ? failure.message : "Could not load the board");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [filter, query]);
+  }, [filter, me.settings, query]);
 
   // One request per pause in typing, not one per keystroke.
   useEffect(() => {
@@ -124,11 +162,31 @@ export default function BoardScreen({
         if (stored && FILTERS.some((item) => item.key === stored)) setFilter(stored as Filter);
       })
       .catch(() => undefined);
+    void listSavedViews().then(setViews);
   }, []);
 
   const chooseFilter = (next: Filter): void => {
     setFilter(next);
     void AsyncStorage.setItem(FILTER_KEY, next).catch(() => undefined);
+  };
+
+  const applyView = (view: SavedView): void => {
+    setFilter(view.filter);
+    setSearch(view.query);
+    setQuery(view.query);
+  };
+
+  const storeView = async (): Promise<void> => {
+    if (viewName.trim().length === 0) return;
+    const next = await saveView({
+      id: `${Date.now()}`,
+      name: viewName.trim(),
+      filter,
+      query,
+    });
+    setViews(next);
+    setViewName("");
+    setNamingView(false);
   };
 
   // The list follows the filter and the debounced query. refreshKey means a task changed elsewhere,
@@ -206,6 +264,51 @@ export default function BoardScreen({
             ))}
           </View>
 
+          {views.length > 0 ? (
+            <View style={{ gap: spacing.xs }}>
+              <Text style={styles.metaText}>Saved views</Text>
+              <View style={styles.filterRow}>
+                {views.map((view) => (
+                  <Chip key={view.id} label={view.name} onPress={() => applyView(view)} />
+                ))}
+              </View>
+            </View>
+          ) : null}
+
+          {namingView ? (
+            <View style={{ gap: spacing.sm }}>
+              <Field label="Name this view" value={viewName} onChangeText={setViewName} />
+              <View style={styles.filterRow}>
+                <Chip label="Save this view" active onPress={() => void storeView()} />
+                <Chip label="Cancel" onPress={() => setNamingView(false)} />
+              </View>
+              {views.length > 0 ? (
+                <View style={styles.filterRow}>
+                  {views.map((view) => (
+                    <Pressable
+                      key={`remove-${view.id}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete ${view.name}`}
+                      onPress={() => void removeSavedView(view.id).then(setViews)}
+                    >
+                      <Text style={styles.removeView}>✕ {view.name}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : (
+            <Pressable accessibilityRole="button" onPress={() => setNamingView(true)}>
+              <Text style={styles.link}>Save this view</Text>
+            </Pressable>
+          )}
+
+          {stale ? (
+            <Text style={{ color: colors.amber, fontSize: 12 }}>
+              Showing the last copy saved on this phone. Changes need a connection.
+            </Text>
+          ) : null}
+
           {query && !loading ? (
             <Text style={styles.metaText}>
               {tasks.length} matching “{query}”
@@ -266,4 +369,6 @@ const styles = StyleSheet.create({
   rowTitle: { color: colors.text, fontSize: 15, fontWeight: "600", flex: 1, lineHeight: 20 },
   rowMeta: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm },
   metaText: { color: colors.muted, fontSize: 12 },
+  link: { color: colors.mint, fontSize: 12, fontWeight: "700" },
+  removeView: { color: colors.muted, fontSize: 11 },
 });

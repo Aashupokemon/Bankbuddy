@@ -12,6 +12,7 @@ import {
   subscribeDemoMode,
   subscribeQueue,
 } from "./api";
+import { isAppLockEnabled, unlockApp } from "./security";
 import BoardScreen from "./screens/BoardScreen";
 import CreateScreen from "./screens/CreateScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -33,6 +34,8 @@ export default function App(): React.JSX.Element {
   const [queued, setQueued] = useState(0);
   // subscribeDemoMode calls the listener with the current value, so it seeds this state too.
   const [demo, setDemo] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -44,6 +47,8 @@ export default function App(): React.JSX.Element {
       } finally {
         setBooting(false);
       }
+      // Asked after the session is known: a locked app should not flash the board first.
+      if (await isAppLockEnabled()) setLocked(true);
     })();
   }, []);
 
@@ -71,6 +76,34 @@ export default function App(): React.JSX.Element {
         <StatusBar barStyle="light-content" />
         <Text style={styles.brand}>BankBuddy</Text>
         <ActivityIndicator color={colors.mint} />
+      </SafeAreaView>
+    );
+  }
+
+  if (locked) {
+    return (
+      <SafeAreaView style={styles.splash}>
+        <StatusBar barStyle="light-content" />
+        <Text style={styles.brand}>BankBuddy</Text>
+        <Text style={styles.lockHint}>Locked. Unlock to see the branch board.</Text>
+        {unlockError ? <Text style={{ color: colors.amber, fontSize: 12 }}>{unlockError}</Text> : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Unlock BankBuddy"
+          onPress={() => {
+            void unlockApp().then((ok) => {
+              if (ok) {
+                setLocked(false);
+                setUnlockError(null);
+              } else {
+                setUnlockError("Not unlocked. Try again.");
+              }
+            });
+          }}
+          style={styles.unlockButton}
+        >
+          <Text style={styles.unlockText}>Unlock</Text>
+        </Pressable>
       </SafeAreaView>
     );
   }
@@ -213,6 +246,18 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
   },
   brand: { color: colors.text, fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
+  lockHint: { color: colors.muted, fontSize: 13, textAlign: "center", paddingHorizontal: spacing.xl },
+  unlockButton: {
+    minHeight: 46,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.mint,
+    backgroundColor: colors.mintDark,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unlockText: { color: colors.mint, fontSize: 15, fontWeight: "700" },
   content: { flex: 1 },
   demoBanner: {
     backgroundColor: colors.amberDark,

@@ -99,6 +99,8 @@ function task(
     isOverdue: false,
     dependencyCount: 0,
     blockedByCount: 0,
+    checklistDone: 0,
+    checklistTotal: 0,
     ...extra,
   };
 }
@@ -129,6 +131,39 @@ const tracked: Record<string, DemoTracked> = {
     ],
   },
 };
+
+interface DemoChecklistItem {
+  id: string;
+  title: string;
+  done: boolean;
+  position: number;
+  completedAt: string | null;
+  createdAt: string;
+  attachmentId: string | null;
+}
+
+/** Photo evidence kept in memory for the session; demo data is never written to disk. */
+const attachments = new Map<string, { taskId: string; checklistItemId: string | null; contentType: string; dataBase64: string; createdAt: string }>();
+
+const checklists: Record<string, DemoChecklistItem[]> = {
+  "demo-task-1": [
+    { id: "demo-check-1", title: "Call the customer and agree a time", done: true, position: 0, completedAt: at(-22), createdAt: at(-40), attachmentId: null },
+    { id: "demo-check-2", title: "Collect the address proof", done: true, position: 1, completedAt: at(-18), createdAt: at(-40), attachmentId: null },
+    { id: "demo-check-3", title: "Get the manager's signature on the file", done: false, position: 2, completedAt: null, createdAt: at(-40), attachmentId: null },
+  ],
+  "demo-task-5": [
+    { id: "demo-check-4", title: "Count the physical keys", done: false, position: 0, completedAt: null, createdAt: at(-30), attachmentId: null },
+    { id: "demo-check-5", title: "Match the register against the digital entry", done: false, position: 1, completedAt: null, createdAt: at(-30), attachmentId: null },
+  ],
+};
+
+function checklistFor(taskId: string): DemoChecklistItem[] {
+  const existing = checklists[taskId];
+  if (existing) return existing;
+  const created: DemoChecklistItem[] = [];
+  checklists[taskId] = created;
+  return created;
+}
 
 const notifications: NotificationDto[] = [
   {
@@ -229,7 +264,13 @@ const newId = (prefix: string): string => `${prefix}-${nextId++}`;
 function refresh(t: TaskDto): TaskDto {
   const overdue =
     t.dueAt !== null && t.status !== "done" && t.status !== "cancelled" && new Date(t.dueAt).getTime() < Date.now();
-  return { ...t, isOverdue: overdue };
+  const items = checklists[t.id] ?? [];
+  return {
+    ...t,
+    isOverdue: overdue,
+    checklistDone: items.filter((item) => item.done).length,
+    checklistTotal: items.length,
+  };
 }
 
 function counts(): DashboardResponse["counts"] {
@@ -450,6 +491,128 @@ export function demoRequest(path: string, method: string, body: unknown): unknow
     }
   }
 
+  if ((match = url.match(/^\/api\/v1\/tasks\/([^/]+)\/checklist$/))) {
+    const id = match[1]!;
+    const items = checklistFor(findTask(id).id);
+    if (verb === "GET") {
+      const sorted = [...items].sort((a, b) => a.position - b.position).map((item) => ({ ...item, taskId: id }));
+      return { items: sorted, done: sorted.filter((item) => item.done).length, total: sorted.length };
+    }
+    if (verb === "POST") {
+      const title = ((body ?? {}) as { title?: string }).title?.trim() ?? "Untitled step";
+      const item: DemoChecklistItem = {
+        id: newId("demo-check"),
+        title,
+        done: false,
+        position: items.reduce((max, entry) => Math.max(max, entry.position + 1), 0),
+        completedAt: null,
+        createdAt: new Date().toISOString(),
+        attachmentId: null,
+      };
+      items.push(item);
+      return { ...item, taskId: id };
+    }
+  }
+
+  if ((match = url.match(/^\/api\/v1\/tasks\/([^/]+)\/checklist\/([^/]+)$/))) {
+    const id = match[1]!;
+    const itemId = match[2]!;
+    findTask(id);
+    const items = checklistFor(id);
+    const item = items.find((entry) => entry.id === itemId);
+    if (!item) throw Object.assign(new Error("Checklist step not found"), { demoStatus: 404 });
+    if (verb === "PATCH") {
+      const input = (body ?? {}) as { title?: string; done?: boolean; position?: number };
+      if (input.title !== undefined) item.title = input.title;
+      if (input.position !== undefined) item.position = input.position;
+      if (input.done !== undefined) {
+        item.done = input.done;
+        item.completedAt = input.done ? (item.completedAt ?? new Date().toISOString()) : null;
+      }
+      return { ...item, taskId: id };
+    }
+    if (verb === "DELETE") {
+      checklists[id] = items.filter((entry) => entry.id !== itemId);
+      return null;
+    }
+  }
+
+  if ((match = url.match(/^\/api\/v1\/tasks\/([^/]+)\/attachments$/))) {
+    const id = match[1]!;
+    findTask(id);
+    if (verb === "GET") {
+      return {
+        items: [...attachments.entries()]
+          .filter(([, entry]) => entry.taskId === id)
+          .map(([attachmentId, entry]) => ({
+            id: attachmentId,
+            taskId: entry.taskId,
+            checklistItemId: entry.checklistItemId,
+            contentType: entry.contentType,
+            byteSize: Math.round((entry.dataBase64.length * 3) / 4),
+            createdAt: entry.createdAt,
+          })),
+      };
+    }
+    if (verb === "POST") {
+      const input = (body ?? {}) as { checklistItemId?: string | null; contentType?: string; dataBase64?: string };
+      const attachmentId = newId("demo-attachment");
+      attachments.set(attachmentId, {
+        taskId: id,
+        checklistItemId: input.checklistItemId ?? null,
+        contentType: input.contentType ?? "image/jpeg",
+        dataBase64: input.dataBase64 ?? "",
+        createdAt: new Date().toISOString(),
+      });
+      if (input.checklistItemId) {
+        const item = checklistFor(id).find((entry) => entry.id === input.checklistItemId);
+        if (item) item.attachmentId = attachmentId;
+      }
+      return {
+        id: attachmentId,
+        taskId: id,
+        checklistItemId: input.checklistItemId ?? null,
+        contentType: input.contentType ?? "image/jpeg",
+        byteSize: Math.round(((input.dataBase64?.length ?? 0) * 3) / 4),
+        createdAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  if ((match = url.match(/^\/api\/v1\/attachments\/([^/]+)\/content$/)) && verb === "GET") {
+    const stored = attachments.get(match[1]!);
+    if (!stored) throw Object.assign(new Error("Photo not found"), { demoStatus: 404 });
+    return { id: match[1], contentType: stored.contentType, dataBase64: stored.dataBase64 };
+  }
+
+  if (verb === "POST" && url === "/api/v1/tasks/bulk-update") {
+    const input = (body ?? {}) as {
+      taskIds?: string[];
+      priority?: TaskDto["priority"];
+      categoryKey?: string | null;
+      status?: TaskStatus;
+    };
+    let updated = 0;
+    const errors: Array<{ taskId: string; message: string }> = [];
+    for (const id of input.taskIds ?? []) {
+      const target = tasks.find((t) => t.id === id);
+      if (!target) {
+        errors.push({ taskId: id, message: "Not found" });
+        continue;
+      }
+      if (input.priority !== undefined) target.priority = input.priority;
+      if (input.categoryKey !== undefined) target.categoryKey = input.categoryKey;
+      if (input.status !== undefined) {
+        target.status = input.status;
+        target.completedAt = input.status === "done" ? new Date().toISOString() : null;
+      }
+      target.version += 1;
+      target.updatedAt = new Date().toISOString();
+      updated += 1;
+    }
+    return { updated, skipped: (input.taskIds ?? []).length - updated, taskIds: input.taskIds ?? [], errors };
+  }
+
   if (verb === "POST" && url === "/api/v1/assistant/extract") {
     return extract(((body ?? {}) as { text?: string }).text ?? "");
   }
@@ -502,13 +665,16 @@ export function demoRequest(path: string, method: string, body: unknown): unknow
   }
 
   if (verb === "GET" && url === "/api/v1/analytics/summary") {
-    const done = tasks.filter((t) => t.completedAt);
+    const windowDays = Number(query.get("windowDays") ?? 30) || 30;
+    const windowStart = Date.now() - windowDays * 24 * 3_600_000;
+    const inWindow = tasks.filter((t) => new Date(t.createdAt).getTime() >= windowStart);
+    const done = inWindow.filter((t) => t.completedAt);
     const durations = done.map((t) => (new Date(t.completedAt!).getTime() - new Date(t.createdAt).getTime()) / 3_600_000);
     const summary: AnalyticsSummary = {
-      windowDays: 30,
-      created: tasks.length,
+      windowDays,
+      created: inWindow.length,
       completed: done.length,
-      cancelled: tasks.filter((t) => t.status === "cancelled").length,
+      cancelled: inWindow.filter((t) => t.status === "cancelled").length,
       reopened: 0,
       medianCompletionHours: durations.length ? durations.sort((a, b) => a - b)[0]! : null,
       onTimeRate: done.length
@@ -521,6 +687,8 @@ export function demoRequest(path: string, method: string, body: unknown): unknow
         { categoryKey: "customer_service", count: 2 },
         { categoryKey: "kyc", count: 1 },
       ],
+      checklistCompletionRate: 0.67,
+      medianHandoverHours: 2.5,
     };
     return summary;
   }
@@ -639,8 +807,48 @@ export function demoRequest(path: string, method: string, body: unknown): unknow
   }
 
   if (verb === "POST" && url === "/api/v1/sync/operations") {
-    const operations = ((body ?? {}) as { operations?: Array<{ id: string }> }).operations ?? [];
-    return { results: operations.map((operation) => ({ id: operation.id, status: "applied" as const })) };
+    const operations =
+      ((body ?? {}) as { operations?: Array<{ id: string; kind: string; payload: Record<string, unknown> }> })
+        .operations ?? [];
+    // Checklist operations are applied for real in demo mode too, so a queued tick does not vanish
+    // behind a generic "applied" answer.
+    const results = operations.map((operation) => {
+      try {
+        const payload = operation.payload as { taskId?: string; itemId?: string; title?: string; done?: boolean };
+        const taskId = payload.taskId ?? "";
+        findTask(taskId);
+        const items = checklistFor(taskId);
+        if (operation.kind === "checklist.add") {
+          items.push({
+            id: newId("demo-check"),
+            title: payload.title ?? "Untitled step",
+            done: false,
+            position: items.reduce((max, entry) => Math.max(max, entry.position + 1), 0),
+            completedAt: null,
+            createdAt: new Date().toISOString(),
+            attachmentId: null,
+          });
+        } else if (operation.kind === "checklist.update") {
+          const item = items.find((entry) => entry.id === payload.itemId);
+          if (!item) throw new Error("Checklist step not found");
+          if (payload.title !== undefined) item.title = payload.title;
+          if (payload.done !== undefined) {
+            item.done = payload.done;
+            item.completedAt = payload.done ? new Date().toISOString() : null;
+          }
+        } else if (operation.kind === "checklist.remove") {
+          checklists[taskId] = items.filter((entry) => entry.id !== payload.itemId);
+        }
+        return { id: operation.id, status: "applied" as const, taskId };
+      } catch (failure) {
+        return {
+          id: operation.id,
+          status: "rejected" as const,
+          detail: failure instanceof Error ? failure.message : "Rejected",
+        };
+      }
+    });
+    return { results };
   }
 
   return undefined;

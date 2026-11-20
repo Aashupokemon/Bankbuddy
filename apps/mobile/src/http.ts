@@ -1,5 +1,11 @@
 import type {
+  AnalyticsSummary,
+  AttachmentDto,
   BulkReassignResponse,
+  BulkUpdateInput,
+  BulkUpdateResponse,
+  ChecklistItemDto,
+  ChecklistResponse,
   DashboardResponse,
   ExtractResponse,
   MeResponse,
@@ -143,6 +149,30 @@ function endpointMap(request: ApiClient["request"]) {
     addDependency: (id: string, dependsOnTaskId: string) =>
       request<{ ok: boolean }>(`/api/v1/tasks/${id}/dependencies`, { method: "POST", body: { dependsOnTaskId } }),
 
+    attachment: (attachmentId: string) =>
+      request<{ id: string; contentType: string; dataBase64: string }>(
+        `/api/v1/attachments/${attachmentId}/content`,
+      ),
+
+    attachments: (id: string) => request<{ items: AttachmentDto[] }>(`/api/v1/tasks/${id}/attachments`),
+
+    addAttachment: (id: string, body: { checklistItemId?: string | null; contentType: string; dataBase64: string }) =>
+      request<AttachmentDto>(`/api/v1/tasks/${id}/attachments`, { method: "POST", body }),
+
+    bulkUpdate: (body: BulkUpdateInput) =>
+      request<BulkUpdateResponse>("/api/v1/tasks/bulk-update", { method: "POST", body }),
+
+    checklist: (id: string) => request<ChecklistResponse>(`/api/v1/tasks/${id}/checklist`),
+
+    addChecklistItem: (id: string, title: string) =>
+      request<ChecklistItemDto>(`/api/v1/tasks/${id}/checklist`, { method: "POST", body: { title } }),
+
+    updateChecklistItem: (id: string, itemId: string, body: { title?: string; done?: boolean; position?: number }) =>
+      request<ChecklistItemDto>(`/api/v1/tasks/${id}/checklist/${itemId}`, { method: "PATCH", body }),
+
+    removeChecklistItem: (id: string, itemId: string) =>
+      request<void>(`/api/v1/tasks/${id}/checklist/${itemId}`, { method: "DELETE" }),
+
     extract: (text: string) => request<ExtractResponse>("/api/v1/assistant/extract", { method: "POST", body: { text } }),
 
     notifications: () => request<{ items: NotificationDto[] }>("/api/v1/notifications"),
@@ -174,17 +204,8 @@ function endpointMap(request: ApiClient["request"]) {
 
     auditCsv: () => request<string>("/api/v1/audit/export.csv", { as: "text" }),
 
-    analytics: () =>
-      request<{
-        windowDays: number;
-        created: number;
-        completed: number;
-        reopened: number;
-        medianCompletionHours: number | null;
-        onTimeRate: number | null;
-        blockedNow: number;
-        byCategory: Array<{ categoryKey: string | null; count: number }>;
-      }>("/api/v1/analytics/summary"),
+    analytics: (windowDays?: number) =>
+      request<AnalyticsSummary>(`/api/v1/analytics/summary${windowDays ? `?windowDays=${windowDays}` : ""}`),
 
     templates: () => request<{ items: TaskTemplateDto[] }>("/api/v1/templates"),
 
@@ -264,10 +285,20 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         },
         ...(requestOptions.body === undefined ? {} : { body: JSON.stringify(requestOptions.body) }),
       });
-    } catch (error) {
+    } catch {
       // No API reachable (a real phone has no route to 10.0.2.2): fall back to the bundled demo data.
       // Only a transport failure falls back — an HTTP error from a reachable server is still surfaced.
-      const local = options.demo(path, method, requestOptions.body);
+      //
+      // The bundled data only knows its own synthetic ids, so for a real task or checklist step it
+      // has no answer and throws. That throw must not escape as the request's result: it would show
+      // "Task not found" for a connectivity problem and hide the transport failure the offline
+      // queue keys on. No demo answer therefore means the request failed to reach the server.
+      let local: unknown;
+      try {
+        local = options.demo(path, method, requestOptions.body);
+      } catch {
+        local = undefined;
+      }
       if (local !== undefined) {
         setDemoMode(true);
         return local as T;

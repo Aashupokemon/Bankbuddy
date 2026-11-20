@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { can, type MeResponse, type TaskDto } from "@bankbuddy/contracts";
+import { can, taskPriorities, type MeResponse, type TaskDto, type TaskPriority, type TaskStatus } from "@bankbuddy/contracts";
 
 import { api } from "../api";
 import { colors, spacing } from "../theme";
@@ -34,6 +34,10 @@ export default function ShiftScreen({
 
   const canAssign = can(me.role, "task.assign");
   const canHandOver = can(me.role, "handover.propose");
+  const canEditAny = can(me.role, "task.update.any");
+
+  // Categories actually in use, rather than a settings screen nobody opens during a shift change.
+  const categories = [...new Set(tasks.map((task) => task.categoryKey).filter((key): key is string => Boolean(key)))];
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +82,35 @@ export default function ShiftScreen({
       onChanged();
     } catch (failure) {
       setMessage(failure instanceof Error ? failure.message : "Could not reassign the tasks");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Bulk priority, category and status. Status goes through the same rules as a single change, so the
+   * server reports per-task refusals (an open dependency, a missing reason) instead of the batch
+   * silently skipping them.
+   */
+  const bulkEdit = async (change: {
+    priority?: TaskPriority;
+    categoryKey?: string | null;
+    status?: TaskStatus;
+  }): Promise<void> => {
+    if (selected.size === 0) return;
+    setBusy(true);
+    try {
+      const result = await api.bulkUpdate({ taskIds: [...selected], ...change });
+      setMessage(
+        result.errors.length === 0
+          ? `Changed ${result.updated} task(s).`
+          : `Changed ${result.updated} task(s); ${result.errors.length} were refused (${result.errors[0]!.message}).`,
+      );
+      setSelected(new Set());
+      await load();
+      onChanged();
+    } catch (failure) {
+      setMessage(failure instanceof Error ? failure.message : "Could not change the tasks");
     } finally {
       setBusy(false);
     }
@@ -186,6 +219,34 @@ export default function ShiftScreen({
               loading={busy}
               onPress={() => void reassign(null)}
             />
+          </View>
+        </Card>
+      ) : null}
+
+      {canEditAny ? (
+        <Card>
+          <Text style={styles.sectionTitle}>Bulk priority, category and status</Text>
+          <Text style={styles.hint}>Applies to the {selected.size} selected task(s).</Text>
+          <View style={styles.chipRow}>
+            {taskPriorities.map((priority) => (
+              <Chip
+                key={priority}
+                label={priority}
+                onPress={() => void bulkEdit({ priority })}
+                color={priority === "urgent" ? colors.danger : colors.mint}
+              />
+            ))}
+          </View>
+          <View style={styles.chipRow}>
+            {categories.map((key) => (
+              <Chip key={key} label={key.replace(/_/g, " ")} onPress={() => void bulkEdit({ categoryKey: key })} />
+            ))}
+            <Chip label="no category" onPress={() => void bulkEdit({ categoryKey: null })} />
+          </View>
+          <View style={styles.chipRow}>
+            <Chip label="Start" onPress={() => void bulkEdit({ status: "in_progress" })} />
+            <Chip label="Done" onPress={() => void bulkEdit({ status: "done" })} />
+            <Chip label="Blocked" onPress={() => void bulkEdit({ status: "blocked" })} />
           </View>
         </Card>
       ) : null}

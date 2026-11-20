@@ -7,7 +7,7 @@
     "scheme": "bankbuddy",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
-    "plugins": ["./plugins/withCleartextTraffic"],
+    "plugins": ["./plugins/withCleartextTraffic", "expo-notifications", ["expo-image-picker", { "cameraPermission": "BankBuddy uses the camera to attach photo evidence to a checklist step." }], "expo-local-authentication"],
     "android": {
       "package": "com.bankbuddy.app",
       "adaptiveIcon": {

@@ -117,3 +117,36 @@ export function listConflicts(): Promise<QueueConflict[]> {
 export function dismissConflict(operationId: string): Promise<void> {
   return offlineQueue.dismissConflict(operationId);
 }
+
+/** A client-generated id, so a replayed operation is still applied at most once. */
+export function newClientId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+    const value = Math.floor(Math.random() * 16);
+    const nibble = character === "x" ? value : (value & 0x3) | 0x8;
+    return nibble.toString(16);
+  });
+}
+
+/**
+ * Re-sends a change that lost a version race, on top of whatever the server has now.
+ *
+ * The conflict is dismissed and the write is queued under a *new* id: the server has already recorded
+ * the old id as conflicted, so reusing it would only replay the conflict. `overrides` is where the
+ * caller puts the fresh version it just read.
+ */
+export async function retryConflict(
+  operationId: string,
+  overrides: Record<string, unknown> = {},
+): Promise<FlushOutcome | null> {
+  const conflict = (await offlineQueue.listConflicts()).find((entry) => entry.operation.id === operationId);
+  if (!conflict) return null;
+
+  await offlineQueue.enqueue({
+    ...conflict.operation,
+    id: newClientId(),
+    at: new Date().toISOString(),
+    payload: { ...conflict.operation.payload, ...overrides },
+  });
+  await offlineQueue.dismissConflict(operationId);
+  return flushQueue();
+}
