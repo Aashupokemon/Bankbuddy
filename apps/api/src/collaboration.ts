@@ -70,13 +70,17 @@ export async function addComment(
     [identity.branchId, taskId, identity.userId, JSON.stringify({ commentId: row.id })],
   );
 
+  // "@Name" in a comment is how a branch actually pulls someone in; turning it into a notification
+  // row is cheaper and less disruptive than inventing a chat feature.
+  const mentioned = await notifyMentions(db, identity, taskId, input.body, row.id);
+
   await writeAudit(db, {
     branchId: identity.branchId,
     actorId: identity.userId,
     action: "comment.create",
     entityType: "task_comment",
     entityId: row.id,
-    after: { taskId, bodyLength: input.body.length },
+    after: { taskId, bodyLength: input.body.length, mentioned },
   });
 
   return {
@@ -87,6 +91,47 @@ export async function addComment(
     body: input.body,
     createdAt: new Date(row.created_at).toISOString(),
   };
+}
+
+/** Resolves @mentions against real branch members and notifies each one at most once per comment. */
+async function notifyMentions(
+  db: Queryable,
+  identity: Identity,
+  taskId: string,
+  body: string,
+  commentId: string,
+): Promise<string[]> {
+  // Two words at most ("@Priya Menon", "@Meera"), which covers how people are actually named here.
+  const candidates = [...body.matchAll(/@([A-Za-z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?)/g)].map((match) =>
+    match[1]!.trim().toLowerCase(),
+  );
+  if (candidates.length === 0) return [];
+
+  const members = await db.query<{ id: string; name: string }>(
+    `select u.id, u.name from memberships m join users u on u.id = m.user_id where m.branch_id = $1`,
+    [identity.branchId],
+  );
+  const task = await db.query<{ title: string }>("select title from tasks where branch_id = $1 and id = $2", [
+    identity.branchId,
+    taskId,
+  ]);
+  const title = task.rows[0]?.title ?? "a task";
+
+  const notified: string[] = [];
+  for (const member of members.rows) {
+    if (member.id === identity.userId) continue;
+    if (!candidates.includes(member.name.toLowerCase())) continue;
+    await db.query("select insert_notification($1,$2,$3,'mentioned',$4,$5,$6)", [
+      identity.branchId,
+      member.id,
+      taskId,
+      `${identity.name} mentioned you`,
+      `${title}: ${body.slice(0, 160)}`,
+      `mention:${commentId}:${member.id}`,
+    ]);
+    notified.push(member.id);
+  }
+  return notified;
 }
 
 export interface DependencyDto {

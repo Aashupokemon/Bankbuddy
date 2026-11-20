@@ -227,6 +227,62 @@ export async function updateTemplate(
  * Creates today's (or `input.date`'s) occurrences for every chore that is due. Idempotent: a second
  * run for the same date reports the chores as skipped instead of creating them again.
  */
+/**
+ * Called when the board loads: creates today's chores if nobody has yet, and nudges the owner of a
+ * chore that is due but has not been started. Both steps are idempotent, and a member without
+ * template rights is simply skipped rather than shown an error for a background convenience.
+ */
+export async function autoMaterialise(
+  db: Queryable,
+  identity: Identity,
+): Promise<{ created: number; nudged: number }> {
+  if (!can(identity.role, "task.assign")) return { created: 0, nudged: 0 };
+
+  const runDate = toIsoDate(new Date(), identity.timezone);
+  const weekday = weekdayOf(runDate);
+  if (weekday === null) return { created: 0, nudged: 0 };
+
+  const pending = await db.query<{ count: string }>(
+    `select count(*)::text as count
+       from task_templates tp
+      where tp.branch_id = $1 and tp.active
+        and (tp.cadence = 'daily' or tp.weekday = $2)
+        and not exists (select 1 from tasks t where t.template_id = tp.id and t.occurrence_on = $3::date)`,
+    [identity.branchId, weekday, runDate],
+  );
+
+  let created = 0;
+  if (Number(pending.rows[0]?.count ?? 0) > 0) {
+    created = (await materialiseTemplates(db, identity, { date: runDate })).created;
+  }
+
+  // A chore that exists but was never started by its due time is the one that actually gets missed.
+  const missed = await db.query<{ id: string; title: string; owner_id: string | null; created_by: string }>(
+    `select id, title, owner_id, created_by
+       from tasks
+      where branch_id = $1 and template_id is not null and occurrence_on = $2::date
+        and status = 'open' and deleted_at is null and due_at is not null and due_at < now()`,
+    [identity.branchId, runDate],
+  );
+
+  let nudged = 0;
+  for (const task of missed.rows) {
+    const recipient = task.owner_id ?? task.created_by;
+    if (recipient === identity.userId) continue;
+    await db.query("select insert_notification($1,$2,$3,'missed_chore',$4,$5,$6)", [
+      identity.branchId,
+      recipient,
+      task.id,
+      "A branch chore has not been started",
+      task.title,
+      `missed-chore:${task.id}:${runDate}`,
+    ]);
+    nudged += 1;
+  }
+
+  return { created, nudged };
+}
+
 export async function materialiseTemplates(
   db: Queryable,
   identity: Identity,

@@ -270,6 +270,28 @@ export async function analyticsSummary(db: Queryable, identity: Identity, window
     [identity.branchId, String(days)],
   );
 
+  // How much of the checklist work on finished tasks actually got done: the difference between a
+  // task being closed and the branch's steps having been followed.
+  const checklist = await db.query<{ done: string; total: string }>(
+    `select count(*) filter (where c.done)::text as done, count(*)::text as total
+       from task_checklist_items c
+       join tasks t on t.id = c.task_id
+      where c.branch_id = $1 and t.deleted_at is null
+        and t.completed_at >= now() - ($2 || ' days')::interval`,
+    [identity.branchId, String(days)],
+  );
+  const checklistTotal = Number(checklist.rows[0]?.total ?? 0);
+
+  // How long a handover waited for an answer. A handover nobody answers is work that silently
+  // stops moving, so this is the number a supervisor should watch.
+  const handovers = await db.query<{ hours: string | null }>(
+    `select percentile_cont(0.5) within group (order by extract(epoch from responded_at - created_at) / 3600)::text as hours
+       from handovers
+      where branch_id = $1 and responded_at is not null
+        and responded_at >= now() - ($2 || ' days')::interval`,
+    [identity.branchId, String(days)],
+  );
+
   const onTime = Number(row?.on_time ?? 0);
   const withDue = Number(row?.completed_with_due ?? 0);
 
@@ -283,6 +305,8 @@ export async function analyticsSummary(db: Queryable, identity: Identity, window
     onTimeRate: withDue > 0 ? onTime / withDue : null,
     blockedNow: Number(row?.blocked_now ?? 0),
     byCategory: byCategory.rows.map((r) => ({ categoryKey: r.category_key, count: Number(r.count) })),
+    checklistCompletionRate: checklistTotal > 0 ? Number(checklist.rows[0]!.done) / checklistTotal : null,
+    medianHandoverHours: handovers.rows[0]?.hours ? Number(handovers.rows[0]!.hours) : null,
   };
 }
 

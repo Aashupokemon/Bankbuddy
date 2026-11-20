@@ -33,6 +33,10 @@ export class ApiError extends Error {
   static validation(message: string, errors: Array<{ path: string; message: string }>): ApiError {
     return new ApiError(422, "validation_failed", message, { errors });
   }
+
+  static tooLarge(code: string, message: string): ApiError {
+    return new ApiError(413, code, message);
+  }
 }
 
 export function parseBody<T extends ZodTypeAny>(schema: T, body: unknown): z.infer<T> {

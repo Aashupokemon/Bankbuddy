@@ -830,3 +830,111 @@ test("unknown routes and invalid bodies return problem details", async () => {
   assert.equal(invalid.json.code, "validation_failed");
   assert.ok(Array.isArray(invalid.json.errors));
 });
+
+/* ------------------------------------------------------------------ task checklists */
+
+test("a checklist tracks progress and respects who may change it", async () => {
+  const manager = accounts["priya@alpha.example"]!;
+  const employee = accounts["ravi@alpha.example"]!;
+  const auditor = accounts["meera@alpha.example"]!;
+
+  const created = await api("/api/v1/tasks", {
+    method: "POST",
+    token: manager.token,
+    body: { title: "Prepare the synthetic KYC file", ownerId: manager.userId, priority: "normal" },
+  });
+  assert.equal(created.status, 201, created.text);
+  const taskId = created.json.id as string;
+
+  const first = await api(`/api/v1/tasks/${taskId}/checklist`, {
+    method: "POST",
+    token: manager.token,
+    body: { title: "Collect the address proof" },
+  });
+  assert.equal(first.status, 201, first.text);
+  assert.equal(first.json.done, false);
+  assert.equal(first.json.position, 0);
+  assert.equal(first.json.taskId, taskId);
+
+  const second = await api(`/api/v1/tasks/${taskId}/checklist`, {
+    method: "POST",
+    token: manager.token,
+    body: { title: "Get the manager signature" },
+  });
+  assert.equal(second.json.position, 1, "steps keep the order they were added in");
+
+  const empty = await api(`/api/v1/tasks/${taskId}/checklist`, { token: manager.token });
+  assert.equal(empty.status, 200);
+  assert.deepEqual([empty.json.done, empty.json.total], [0, 2]);
+
+  const toggled = await api(`/api/v1/tasks/${taskId}/checklist/${first.json.id}`, {
+    method: "PATCH",
+    token: manager.token,
+    body: { done: true },
+  });
+  assert.equal(toggled.status, 200, toggled.text);
+  assert.equal(toggled.json.done, true);
+  assert.ok(toggled.json.completedAt, "checking a step records when it happened");
+
+  const task = await api(`/api/v1/tasks/${taskId}`, { token: manager.token });
+  assert.deepEqual([task.json.checklistDone, task.json.checklistTotal], [1, 2], "the task carries its progress");
+
+  // A read-only auditor can see the checklist but cannot change it.
+  assert.equal((await api(`/api/v1/tasks/${taskId}/checklist`, { token: auditor.token })).status, 200);
+  const auditorWrite = await api(`/api/v1/tasks/${taskId}/checklist`, {
+    method: "POST",
+    token: auditor.token,
+    body: { title: "Should not be allowed" },
+  });
+  assert.equal(auditorWrite.status, 403);
+
+  // An employee cannot edit the checklist of a task they neither own nor created.
+  const employeeWrite = await api(`/api/v1/tasks/${taskId}/checklist`, {
+    method: "POST",
+    token: employee.token,
+    body: { title: "Should not be allowed either" },
+  });
+  assert.equal(employeeWrite.status, 403);
+
+  const invalid = await api(`/api/v1/tasks/${taskId}/checklist`, {
+    method: "POST",
+    token: manager.token,
+    body: { title: "   " },
+  });
+  assert.equal(invalid.status, 422);
+
+  const removed = await api(`/api/v1/tasks/${taskId}/checklist/${first.json.id}`, {
+    method: "DELETE",
+    token: manager.token,
+  });
+  assert.equal(removed.status, 204);
+  const remaining = await api(`/api/v1/tasks/${taskId}/checklist`, { token: manager.token });
+  assert.deepEqual([remaining.json.done, remaining.json.total], [0, 1]);
+
+  const history = await api(`/api/v1/tasks/${taskId}/activity`, { token: manager.token });
+  assert.ok(
+    history.json.items.some((item: { summary: string }) => item.summary.includes("Checklist") || item.summary.includes("checklist")),
+    "checklist changes appear in the task history",
+  );
+});
+
+test("a checklist step cannot be reached through another task's id", async () => {
+  const manager = accounts["priya@alpha.example"]!;
+  const list = await api("/api/v1/tasks?limit=2", { token: manager.token });
+  const [one, two] = list.json.items as Array<{ id: string }>;
+  assert.ok(one && two);
+
+  const item = await api(`/api/v1/tasks/${one.id}/checklist`, {
+    method: "POST",
+    token: manager.token,
+    body: { title: "Scoped step" },
+  });
+  assert.equal(item.status, 201);
+
+  const crossed = await api(`/api/v1/tasks/${two.id}/checklist/${item.json.id}`, {
+    method: "PATCH",
+    token: manager.token,
+    body: { done: true },
+  });
+  assert.equal(crossed.status, 404, "the item is only addressable through its own task");
+});

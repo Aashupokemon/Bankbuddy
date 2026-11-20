@@ -11,6 +11,8 @@ import {
   transitionNeedsManager,
   type BulkReassignInput,
   type BulkReassignResponse,
+  type BulkUpdateInput,
+  type BulkUpdateResponse,
   type CreateTaskInput,
   type DashboardResponse,
   type TaskDto,
@@ -49,6 +51,8 @@ export interface TaskRow {
   recurrence_rule: string | null;
   dependency_count?: number | string;
   blocked_by_count?: number | string;
+  checklist_total?: number | string;
+  checklist_done?: number | string;
   deleted_at: Date | string | null;
 }
 
@@ -85,6 +89,8 @@ export function mapTask(row: TaskRow, timeZone: string, now = new Date()): TaskD
       isOverdue(new Date(dueIso), row.due_precision ?? "datetime", timeZone, now),
     dependencyCount: Number(row.dependency_count ?? 0),
     blockedByCount: Number(row.blocked_by_count ?? 0),
+    checklistDone: Number(row.checklist_done ?? 0),
+    checklistTotal: Number(row.checklist_total ?? 0),
   };
 }
 
@@ -93,7 +99,9 @@ const SELECT_TASK = `
     (select count(*) from task_dependencies d where d.task_id = t.id) as dependency_count,
     (select count(*) from task_dependencies d
        join tasks dep on dep.id = d.depends_on_task_id
-      where d.task_id = t.id and dep.status not in ('done', 'cancelled', 'archived')) as blocked_by_count
+      where d.task_id = t.id and dep.status not in ('done', 'cancelled', 'archived')) as blocked_by_count,
+    (select count(*) from task_checklist_items c where c.task_id = t.id) as checklist_total,
+    (select count(*) from task_checklist_items c where c.task_id = t.id and c.done) as checklist_done
     from tasks t
     left join users u on u.id = t.owner_id
 `;
@@ -513,6 +521,26 @@ export async function transitionTask(
     ]);
   }
 
+  // Dependencies are only worth recording if they hold something back: starting (or finishing) work
+  // whose blockers are still open is refused, rather than silently allowed and later noticed.
+  if (input.status === "in_progress" || input.status === "done") {
+    const open = await db.query<{ count: string }>(
+      `select count(*)::text as count
+         from task_dependencies d
+         join tasks t on t.id = d.depends_on_task_id
+        where d.branch_id = $1 and d.task_id = $2 and t.deleted_at is null
+          and t.status not in ('done', 'cancelled', 'archived')`,
+      [identity.branchId, taskId],
+    );
+    const waiting = Number(open.rows[0]?.count ?? 0);
+    if (waiting > 0) {
+      throw ApiError.validation(
+        "Finish the work this task depends on first",
+        [{ path: "status", message: `${waiting} blocking task(s) are still open` }],
+      );
+    }
+  }
+
   const now = new Date();
   const completed = input.status === "done";
   const archived = input.status === "archived";
@@ -713,6 +741,102 @@ export async function bulkReassign(
     skipped: requested.length - updated.rows.length,
     taskIds: updated.rows.map((row) => row.id),
   };
+}
+
+/**
+ * Bulk priority/category change, plus a bulk status move that goes through the same transition rules
+ * as a single one (reasons, dependencies, role checks). One bad task reports itself and the rest
+ * still apply, so a batch is never all-or-nothing by surprise.
+ */
+export async function bulkUpdate(
+  db: Queryable,
+  identity: Identity,
+  input: BulkUpdateInput,
+): Promise<BulkUpdateResponse> {
+  const requested = [...new Set(input.taskIds)];
+  const updated: string[] = [];
+  const errors: Array<{ taskId: string; message: string }> = [];
+
+  if ((input.priority !== undefined || input.categoryKey !== undefined) && !can(identity.role, "task.update.any")) {
+    throw ApiError.forbidden("cannot_bulk_update", "Only leads and managers can change work in bulk");
+  }
+
+  const tasks = await db.query<{ id: string; version: number; title: string; priority: string; category_key: string | null }>(
+    `select id, version, title, priority, category_key from tasks
+      where branch_id = $1 and id = any($2::uuid[]) and deleted_at is null and status <> 'archived'`,
+    [identity.branchId, requested],
+  );
+  const found = new Map(tasks.rows.map((row) => [row.id, row]));
+  for (const id of requested) if (!found.has(id)) errors.push({ taskId: id, message: "Not found, or archived" });
+
+  for (const row of tasks.rows) {
+    try {
+      // The field update bumps the row version, so the status move has to use the version the
+      // update produced rather than the one read before it.
+      let versionForStatus = row.version;
+      if (input.priority !== undefined || input.categoryKey !== undefined) {
+        const result = await db.query<TaskRow>(
+          `update tasks set priority = $3, category_key = $4, updated_by = $2
+            where branch_id = $1 and id = $5 and version = $6 and deleted_at is null
+            returning *`,
+          [
+            identity.branchId,
+            identity.userId,
+            input.priority ?? row.priority,
+            input.categoryKey === undefined ? row.category_key : input.categoryKey,
+            row.id,
+            row.version,
+          ],
+        );
+        const fresh = result.rows[0];
+        if (!fresh) {
+          errors.push({ taskId: row.id, message: "Someone else changed it first" });
+          continue;
+        }
+        versionForStatus = fresh.version;
+        await db.query(
+          `insert into task_events (branch_id, task_id, actor_id, kind, summary, before, after, reason)
+           values ($1,$2,$3,'updated','Changed in bulk',$4::jsonb,$5::jsonb,$6)`,
+          [
+            identity.branchId,
+            row.id,
+            identity.userId,
+            JSON.stringify({ priority: row.priority, categoryKey: row.category_key }),
+            JSON.stringify({ priority: fresh.priority, categoryKey: fresh.category_key }),
+            input.reason ?? null,
+          ],
+        );
+        await writeAudit(db, {
+          branchId: identity.branchId,
+          actorId: identity.userId,
+          action: "task.bulk_update",
+          entityType: "task",
+          entityId: row.id,
+          before: { priority: row.priority, categoryKey: row.category_key },
+          after: { priority: fresh.priority, categoryKey: fresh.category_key, batchSize: tasks.rows.length },
+          reason: input.reason ?? null,
+        });
+      }
+
+      if (input.status !== undefined) {
+        await transitionTask(db, identity, row.id, {
+          version: versionForStatus,
+          status: input.status,
+          ...(input.reason ? { reason: input.reason } : {}),
+          ...(input.status === "blocked" ? { blockedReason: input.reason ?? "Blocked in bulk" } : {}),
+        });
+      }
+
+      updated.push(row.id);
+    } catch (error) {
+      errors.push({
+        taskId: row.id,
+        message: error instanceof ApiError ? error.message : "Could not update this task",
+      });
+    }
+  }
+
+  return { updated: updated.length, skipped: requested.length - updated.length, taskIds: updated, errors };
 }
 
 export async function softDeleteTask(db: Queryable, identity: Identity, taskId: string): Promise<void> {

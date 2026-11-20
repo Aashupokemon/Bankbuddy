@@ -1,8 +1,10 @@
 import {
+  createChecklistItemSchema,
   createCommentSchema,
   createTaskSchema,
   syncRequestSchema,
   transitionTaskSchema,
+  updateChecklistItemSchema,
   updateTaskSchema,
   type SyncOperation,
   type SyncResult,
@@ -12,6 +14,7 @@ import { withRequestContext } from "@bankbuddy/db";
 import { z } from "zod";
 
 import { ApiError } from "./http.ts";
+import { addChecklistItem, removeChecklistItem, updateChecklistItem } from "./checklist.ts";
 import { addComment } from "./collaboration.ts";
 import { createTask, transitionTask, updateTask } from "./tasks.ts";
 import type { Identity } from "./auth.ts";
@@ -19,6 +22,11 @@ import type { Identity } from "./auth.ts";
 const updateOpPayload = z.object({ taskId: z.string().uuid() }).and(updateTaskSchema);
 const transitionOpPayload = transitionTaskSchema.extend({ taskId: z.string().uuid() });
 const commentOpPayload = createCommentSchema.extend({ taskId: z.string().uuid() });
+const checklistAddPayload = createChecklistItemSchema.extend({ taskId: z.string().uuid() });
+const checklistUpdatePayload = updateChecklistItemSchema.and(
+  z.object({ taskId: z.string().uuid(), itemId: z.string().uuid() }),
+);
+const checklistRemovePayload = z.object({ taskId: z.string().uuid(), itemId: z.string().uuid() });
 
 interface Applied {
   taskId: string;
@@ -43,8 +51,27 @@ async function applyOperation(db: Parameters<Parameters<typeof withRequestContex
     }
     case "comment.create": {
       const payload = commentOpPayload.parse(op.payload);
-      const comment = await addComment(db, identity, payload.taskId, { body: payload.body });
-      return { taskId: payload.taskId, serverVersion: undefined as unknown as number };
+      await addComment(db, identity, payload.taskId, { body: payload.body });
+      return { taskId: payload.taskId };
+    }
+    case "checklist.add": {
+      const payload = checklistAddPayload.parse(op.payload);
+      await addChecklistItem(db, identity, payload.taskId, { title: payload.title });
+      return { taskId: payload.taskId };
+    }
+    case "checklist.update": {
+      const payload = checklistUpdatePayload.parse(op.payload);
+      await updateChecklistItem(db, identity, payload.taskId, payload.itemId, {
+        ...(payload.title === undefined ? {} : { title: payload.title }),
+        ...(payload.done === undefined ? {} : { done: payload.done }),
+        ...(payload.position === undefined ? {} : { position: payload.position }),
+      });
+      return { taskId: payload.taskId };
+    }
+    case "checklist.remove": {
+      const payload = checklistRemovePayload.parse(op.payload);
+      await removeChecklistItem(db, identity, payload.taskId, payload.itemId);
+      return { taskId: payload.taskId };
     }
     default:
       throw ApiError.validation("Unknown operation", [{ path: "kind", message: String(op.kind) }]);

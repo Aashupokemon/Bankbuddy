@@ -2,7 +2,10 @@ import express, { type Request, type Response } from "express";
 
 import {
   bulkReassignSchema,
+  bulkUpdateSchema,
   categorySchema,
+  createAttachmentSchema,
+  createChecklistItemSchema,
   createCommentSchema,
   createDependencySchema,
   createTaskSchema,
@@ -12,6 +15,7 @@ import {
   runTemplatesSchema,
   taskStatuses,
   transitionTaskSchema,
+  updateChecklistItemSchema,
   updateSettingsSchema,
   updateTaskSchema,
   updateTemplateSchema,
@@ -36,6 +40,8 @@ import {
   verifyAuditChain,
 } from "./admin.ts";
 import { extractDraft } from "./assistant.ts";
+import { addAttachment, listAttachments, readAttachment } from "./attachments.ts";
+import { addChecklistItem, listChecklist, removeChecklistItem, updateChecklistItem } from "./checklist.ts";
 import {
   assertPermission,
   authentication,
@@ -60,6 +66,7 @@ import { ApiError, errorHandler, ifMatchVersion, parseBody, route } from "./http
 import { runSync } from "./sync.ts";
 import {
   bulkReassign,
+  bulkUpdate,
   createTask,
   dashboard,
   getTaskRow,
@@ -69,7 +76,7 @@ import {
   transitionTask,
   updateTask,
 } from "./tasks.ts";
-import { createTemplate, listTemplates, materialiseTemplates, updateTemplate } from "./templates.ts";
+import { autoMaterialise, createTemplate, listTemplates, materialiseTemplates, updateTemplate } from "./templates.ts";
 
 function queryString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -84,7 +91,9 @@ function listOf(value: unknown): string[] | undefined {
 export function createApp(database: Database): express.Express {
   const app = express();
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "256kb" }));
+  // Photos arrive as base64, which inflates them by a third; the attachment service caps the decoded
+  // size at 700 KB, so the parser limit only has to leave room for that plus the envelope.
+  app.use(express.json({ limit: "1mb" }));
 
   app.use((req, res, next) => {
     res.setHeader("access-control-allow-origin", req.header("origin") ?? "*");
@@ -193,7 +202,14 @@ export function createApp(database: Database): express.Express {
   app.get(
     "/api/v1/dashboard",
     route(async (req, res) => {
-      body(req, res, await scoped(req, (tx, identity) => dashboard(tx, identity)));
+      const payload = await scoped(req, async (tx, identity) => {
+        // Opening the board is the branch's daily heartbeat, so it is also when today's recurring
+        // chores are created and an unstarted chore gets its nudge. Never blocking: a failure here
+        // must not cost anyone the board itself.
+        await autoMaterialise(tx, identity).catch(() => undefined);
+        return dashboard(tx, identity);
+      });
+      body(req, res, payload);
     }),
   );
 
@@ -240,6 +256,14 @@ export function createApp(database: Database): express.Express {
     route(async (req, res) => {
       const input = parseBody(bulkReassignSchema, req.body);
       body(req, res, await scoped(req, (tx, identity) => bulkReassign(tx, identity, input)));
+    }),
+  );
+
+  app.post(
+    "/api/v1/tasks/bulk-update",
+    route(async (req, res) => {
+      const input = parseBody(bulkUpdateSchema, req.body);
+      body(req, res, await scoped(req, (tx, identity) => bulkUpdate(tx, identity, input)));
     }),
   );
 
@@ -304,6 +328,72 @@ export function createApp(database: Database): express.Express {
       const input = parseBody(createCommentSchema, req.body);
       const comment = await scoped(req, (tx, identity) => addComment(tx, identity, String(req.params.id), input));
       res.status(201).json(comment);
+    }),
+  );
+
+  app.get(
+    "/api/v1/tasks/:id/checklist",
+    route(async (req, res) => {
+      body(req, res, await scoped(req, (tx, identity) => listChecklist(tx, identity, String(req.params.id))));
+    }),
+  );
+
+  app.post(
+    "/api/v1/tasks/:id/checklist",
+    route(async (req, res) => {
+      const input = parseBody(createChecklistItemSchema, req.body);
+      const item = await scoped(req, (tx, identity) => addChecklistItem(tx, identity, String(req.params.id), input));
+      res.status(201).json(item);
+    }),
+  );
+
+  app.patch(
+    "/api/v1/tasks/:id/checklist/:itemId",
+    route(async (req, res) => {
+      const input = parseBody(updateChecklistItemSchema, req.body);
+      body(
+        req,
+        res,
+        await scoped(req, (tx, identity) =>
+          updateChecklistItem(tx, identity, String(req.params.id), String(req.params.itemId), input),
+        ),
+      );
+    }),
+  );
+
+  app.delete(
+    "/api/v1/tasks/:id/checklist/:itemId",
+    route(async (req, res) => {
+      await scoped(req, (tx, identity) =>
+        removeChecklistItem(tx, identity, String(req.params.id), String(req.params.itemId)),
+      );
+      res.status(204).end();
+    }),
+  );
+
+  app.get(
+    "/api/v1/tasks/:id/attachments",
+    route(async (req, res) => {
+      body(req, res, { items: await scoped(req, (tx, identity) => listAttachments(tx, identity, String(req.params.id))) });
+    }),
+  );
+
+  // Photo evidence: base64 in, bytes in Postgres, served back as the original image.
+  app.post(
+    "/api/v1/tasks/:id/attachments",
+    route(async (req, res) => {
+      const input = parseBody(createAttachmentSchema, req.body);
+      const created = await scoped(req, (tx, identity) => addAttachment(tx, identity, String(req.params.id), input));
+      res.status(201).json(created);
+    }),
+  );
+
+  app.get(
+    "/api/v1/attachments/:id/content",
+    route(async (req, res) => {
+      const attachment = await scoped(req, (tx, identity) => readAttachment(tx, identity, String(req.params.id)));
+      res.setHeader("cache-control", "private, max-age=300");
+      res.status(200).json(attachment);
     }),
   );
 

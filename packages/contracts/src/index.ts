@@ -258,6 +258,20 @@ export const createDependencySchema = z.object({
 });
 export type CreateDependencyInput = z.infer<typeof createDependencySchema>;
 
+export const createChecklistItemSchema = z.object({
+  title: z.string().trim().min(1, "Describe the step").max(200),
+});
+export type CreateChecklistItemInput = z.infer<typeof createChecklistItemSchema>;
+
+export const updateChecklistItemSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    done: z.boolean().optional(),
+    position: z.number().int().min(0).max(999).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: "Nothing to update" });
+export type UpdateChecklistItemInput = z.infer<typeof updateChecklistItemSchema>;
+
 export const handoverScopes = ["tasks", "shift"] as const;
 export type HandoverScope = (typeof handoverScopes)[number];
 
@@ -277,6 +291,32 @@ export const proposeHandoverSchema = z
     path: ["taskIds"],
   });
 export type ProposeHandoverInput = z.infer<typeof proposeHandoverSchema>;
+
+/**
+ * Priority and category are editable in bulk by anyone who may edit any task; status is validated
+ * per task through the same transition rules as a single change.
+ */
+export const bulkUpdateSchema = z
+  .object({
+    taskIds: z.array(z.string().uuid()).min(1, "Pick at least one task").max(100),
+    priority: TaskPriority.optional(),
+    categoryKey: z.string().trim().min(1).max(60).nullable().optional(),
+    status: TaskStatus.optional(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .refine(
+    (value) => value.priority !== undefined || value.categoryKey !== undefined || value.status !== undefined,
+    { message: "Pick something to change" },
+  );
+export type BulkUpdateInput = z.infer<typeof bulkUpdateSchema>;
+
+export interface BulkUpdateResponse {
+  updated: number;
+  skipped: number;
+  taskIds: string[];
+  /** Tasks the server refused, with the reason, so one bad row does not hide the rest. */
+  errors: Array<{ taskId: string; message: string }>;
+}
 
 export const bulkReassignSchema = z.object({
   taskIds: z.array(z.string().uuid()).min(1, "Pick at least one task").max(100),
@@ -386,7 +426,16 @@ export type ExtractResponse = z.infer<typeof extractResponseSchema>;
 
 export const syncOperationSchema = z.object({
   id: z.string().uuid(),
-  kind: z.enum(["task.create", "task.update", "task.transition", "comment.create"]),
+  kind: z.enum([
+    "task.create",
+    "task.update",
+    "task.transition",
+    "comment.create",
+    // Checklist ticks are the most repeated write in the app, so they queue like everything else.
+    "checklist.add",
+    "checklist.update",
+    "checklist.remove",
+  ]),
   at: isoDateTime.optional(),
   payload: z.record(z.unknown()),
 });
@@ -442,6 +491,9 @@ export interface TaskDto {
   isOverdue: boolean;
   dependencyCount: number;
   blockedByCount: number;
+  /** Checklist progress, so the board can show "2/5" without a request per card. */
+  checklistDone: number;
+  checklistTotal: number;
 }
 
 export interface TaskListResponse {
@@ -479,6 +531,10 @@ export interface AnalyticsSummary {
   onTimeRate: number | null;
   blockedNow: number;
   byCategory: Array<{ categoryKey: string | null; count: number }>;
+  /** Share of checklist steps completed on tasks finished in the window, 0–1. */
+  checklistCompletionRate: number | null;
+  /** Median hours a proposed handover waited before it was answered. */
+  medianHandoverHours: number | null;
 }
 
 export interface TaskTemplateDto {
@@ -512,6 +568,44 @@ export interface BulkReassignResponse {
   updated: number;
   skipped: number;
   taskIds: string[];
+}
+
+export interface ChecklistItemDto {
+  id: string;
+  taskId: string;
+  title: string;
+  done: boolean;
+  position: number;
+  completedAt: string | null;
+  createdAt: string;
+  /** Set once a photo was attached as evidence; the bytes are fetched separately. */
+  attachmentId: string | null;
+}
+
+export const attachmentContentTypes = ["image/jpeg", "image/png", "image/webp"] as const;
+export type AttachmentContentType = (typeof attachmentContentTypes)[number];
+
+/** Base64 in, bytes in the database: a branch phone has no object store to upload to. */
+export const createAttachmentSchema = z.object({
+  checklistItemId: z.string().uuid().nullable().optional(),
+  contentType: z.enum(attachmentContentTypes),
+  dataBase64: z.string().min(1).max(1_000_000),
+});
+export type CreateAttachmentInput = z.infer<typeof createAttachmentSchema>;
+
+export interface AttachmentDto {
+  id: string;
+  taskId: string;
+  checklistItemId: string | null;
+  contentType: AttachmentContentType;
+  byteSize: number;
+  createdAt: string;
+}
+
+export interface ChecklistResponse {
+  items: ChecklistItemDto[];
+  done: number;
+  total: number;
 }
 
 export interface NotificationDto {
