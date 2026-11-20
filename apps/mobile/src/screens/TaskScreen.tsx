@@ -17,7 +17,7 @@ import {
   type TaskStatus,
 } from "@bankbuddy/contracts";
 
-import { ApiFailure, api, enqueueOperation, newClientId } from "../api";
+import { ApiFailure, api, enqueueOperation, newClientId, saveEvidenceOffline } from "../api";
 import { writeChecklistStep } from "../checklistSync";
 import { cacheKeys, recall, remember } from "../offlineCache";
 import { colors, priorityColor, spacing, statusColor } from "../theme";
@@ -92,7 +92,13 @@ export default function TaskScreen({
     );
     const next: Record<string, string> = {};
     for (const entry of entries) if (entry) next[entry[0]] = entry[1];
-    setPhotos(next);
+    // A file:// entry is a photo still waiting in the offline queue; once the server has the step's
+    // photo it replaces the held file.
+    setPhotos((current) => {
+      const held: Record<string, string> = {};
+      for (const [id, uri] of Object.entries(current)) if (uri.startsWith("file:")) held[id] = uri;
+      return { ...held, ...next };
+    });
   }, []);
 
   const load = useCallback(async () => {
@@ -290,16 +296,25 @@ export default function TaskScreen({
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
-      if (!asset?.base64) {
+      const dataBase64 = asset?.base64;
+      if (!dataBase64) {
         setMessage("That photo could not be read from the camera.");
         return;
       }
+      const contentType = asset?.mimeType === "image/png" ? "image/png" : "image/jpeg";
       setBusy(true);
-      await api.addAttachment(task.id, {
-        checklistItemId: item.id,
-        contentType: asset.mimeType === "image/png" ? "image/png" : "image/jpeg",
-        dataBase64: asset.base64,
+      const write = await writeChecklistStep({
+        send: () => api.addAttachment(task.id, { checklistItemId: item.id, contentType, dataBase64 }),
+        // Without a connection the bytes stay on this phone and the upload joins the offline queue.
+        queue: async () => {
+          const held = await saveEvidenceOffline({ taskId: task.id, itemId: item.id, contentType, dataBase64 });
+          setPhotos((current) => ({ ...current, [item.id]: held.uri }));
+        },
       });
+      if (write.queued) {
+        setMessage("Offline — the photo is saved on this phone and will upload when you sync.");
+        return;
+      }
       // Reloading also refetches the new photo, so the thumbnail comes from the server's copy.
       await load();
       onChanged();
@@ -468,7 +483,8 @@ export default function TaskScreen({
                   </View>
                   <Text style={[styles.body, item.done ? styles.stepDone : null]}>{item.title}</Text>
                 </Pressable>
-                {mayEdit ? (
+                {/* A step that has not reached the server has no id to attach a photo to yet. */}
+                {mayEdit && !item.id.startsWith("local-") ? (
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`Take a photo for ${item.title}`}

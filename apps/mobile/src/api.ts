@@ -1,11 +1,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
-import type { SyncOperation } from "@bankbuddy/contracts";
-
 import { demoRequest } from "./demo";
+import { holdPhotoOffline, sendQueuedBatch, type HeldPhoto } from "./evidence";
+import { fileEvidenceStore } from "./evidenceFiles";
 import { createApiClient } from "./http";
-import { createOfflineQueue, type FlushOutcome, type QueueConflict } from "./offlineQueue";
+import { createOfflineQueue, type FlushOutcome, type QueueConflict, type QueueOperation } from "./offlineQueue";
 
 /**
  * The API base URL. `10.0.2.2` is how the Android emulator reaches the host machine; on a physical
@@ -90,7 +90,7 @@ const offlineQueue = createOfflineQueue({
   setItem: (key, value) => AsyncStorage.setItem(key, value),
 });
 
-export function enqueueOperation(operation: SyncOperation): Promise<number> {
+export function enqueueOperation(operation: QueueOperation): Promise<number> {
   return offlineQueue.enqueue(operation);
 }
 
@@ -103,10 +103,30 @@ export function subscribeQueue(listener: (count: number) => void): () => void {
 }
 
 export function flushQueue(): Promise<FlushOutcome> {
-  return offlineQueue.flush(async (batch) => {
-    const response = await api.sync(batch);
-    return response.results;
-  });
+  return offlineQueue.flush((batch) =>
+    sendQueuedBatch(batch, {
+      store: fileEvidenceStore,
+      // Photos go to the attachment endpoint; the rest of the queue is one sync request.
+      sendOperations: async (operations) => (await api.sync(operations)).results,
+      upload: (taskId, body) => api.addAttachment(taskId, body),
+    }),
+  );
+}
+
+/**
+ * Holds a photo on this phone and queues its upload, for the camera path that runs without a
+ * connection. Returns the local uri so the step can show the picture immediately.
+ */
+export function saveEvidenceOffline(input: {
+  taskId: string;
+  itemId: string | null;
+  contentType: string;
+  dataBase64: string;
+}): Promise<HeldPhoto> {
+  return holdPhotoOffline(
+    { store: fileEvidenceStore, enqueue: enqueueOperation, newId: newClientId },
+    input,
+  );
 }
 
 /** Changes the server refused to merge, kept so a person can review and dismiss them. */

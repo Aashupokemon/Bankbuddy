@@ -18,7 +18,9 @@ export interface QueueOperation {
     | "comment.create"
     | "checklist.add"
     | "checklist.update"
-    | "checklist.remove";
+    | "checklist.remove"
+    // The photo itself is held on the device; this operation carries only its id.
+    | "attachment.add";
   at?: string;
   payload: Record<string, unknown>;
 }
