@@ -213,7 +213,10 @@ main() {
   source_apk="$project_dir/apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
   [ -f "$source_apk" ] || die "Gradle finished but $source_apk is missing."
 
-  version="$(node -p "require('$REPO_ROOT/apps/mobile/app.json').expo.version" 2>/dev/null || echo 0.0.0)"
+  # Read the version with sed: `node -p require()` cannot resolve the MSYS-style /c/... path this
+  # script sees on Windows, which silently produced bankbuddy-0.0.0-release.apk.
+  version="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO_ROOT/apps/mobile/app.json" | head -1)"
+  version="${version:-0.0.0}"
   apk_name="bankbuddy-$version-release.apk"
   mkdir -p "$ARTIFACTS_DIR"
   apk="$ARTIFACTS_DIR/$apk_name"
