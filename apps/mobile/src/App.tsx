@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 
 import type { MeResponse } from "@bankbuddy/contracts";
 
@@ -12,6 +12,7 @@ import {
   subscribeDemoMode,
   subscribeQueue,
 } from "./api";
+import { armOnBackground } from "./autoLock";
 import { isAppLockEnabled, unlockApp } from "./security";
 import BoardScreen from "./screens/BoardScreen";
 import CreateScreen from "./screens/CreateScreen";
@@ -51,6 +52,21 @@ export default function App(): React.JSX.Element {
       if (await isAppLockEnabled()) setLocked(true);
     })();
   }, []);
+
+  // The lock covers more than a cold start: a phone left open on a desk locks the moment the app
+  // leaves the screen, so whoever picks it up next has to prove it is them.
+  useEffect(
+    () =>
+      armOnBackground({
+        appState: AppState,
+        isLockEnabled: isAppLockEnabled,
+        onArm: () => {
+          setLocked(true);
+          setUnlockError(null);
+        },
+      }),
+    [],
+  );
 
   const refresh = useCallback(() => setRefreshKey((key) => key + 1), []);
 
